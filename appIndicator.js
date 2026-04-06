@@ -24,7 +24,6 @@ import St from 'gi://St';
 import * as Params from 'resource:///org/gnome/shell/misc/params.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 
-import * as DBusUtils from './dbusUtils.js';
 import * as IconCache from './iconCache.js';
 import * as Util from './util.js';
 import * as Interfaces from './interfaces.js';
@@ -219,8 +218,6 @@ class AppIndicatorProxy extends DBusProxy {
             return;
         }
 
-        const cancellable = this._cancellable;
-
         if (!params.get_type().equal(AppIndicatorProxy.TUPLE_TYPE)) {
             // If the property includes arguments, we can just queue the signal emission
             const [value] = params.unpack();
@@ -241,7 +238,7 @@ class AppIndicatorProxy extends DBusProxy {
             return;
 
         this._signalsAccumulator = new PromiseUtils.TimeoutPromise(
-            MAX_UPDATE_FREQUENCY, GLib.PRIORITY_DEFAULT_IDLE, cancellable);
+            MAX_UPDATE_FREQUENCY, GLib.PRIORITY_DEFAULT_IDLE, this._cancellable);
         try {
             await this._signalsAccumulator;
             const refreshPropertiesPromises =
@@ -463,7 +460,7 @@ export class AppIndicator extends Signals.EventEmitter {
         }
 
         try {
-            this._commandLine = await DBusUtils.getProcessName(this.busName,
+            this._commandLine = await Util.getProcessName(this.busName,
                 cancellable, GLib.PRIORITY_LOW);
         } catch (e) {
             if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) {
@@ -556,6 +553,21 @@ export class AppIndicator extends Signals.EventEmitter {
 
     get uniqueId() {
         return this._uniqueId;
+    }
+
+    /**
+     * Stable app identifier for hide/show persistence.
+     * Falls back to SNI id, but for generic Electron IDs like
+     * 'chrome_status_icon_1' uses the executable basename instead.
+     */
+    get appId() {
+        if (this._commandLine && this.id?.startsWith('chrome_status_icon')) {
+            const exe = this._commandLine.trim().split(/\s+/)[0];
+            const basename = exe.split('/').pop();
+            if (basename)
+                return basename.toLowerCase();
+        }
+        return this.id;
     }
 
     get status() {

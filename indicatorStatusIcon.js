@@ -15,7 +15,6 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
@@ -24,13 +23,56 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Panel from 'resource:///org/gnome/shell/ui/panel.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+
 import * as AppIndicator from './appIndicator.js';
+import * as OverflowManager from './overflowManager.js';
 import * as PromiseUtils from './promiseUtils.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
 import * as DBusMenu from './dbusMenu.js';
+import * as WindowManager from './windowManager.js';
 
 const DEFAULT_ICON_SIZE = Panel.PANEL_ICON_SIZE || 16;
+
+// When a tray menu opens, block hover-switching by setting reactive=false
+// on all OTHER menuManager sources. Menus stay in menuManager so that
+// click-outside-to-close and Escape work natively.
+// Monkey-patch menuManager._findMenuForSource to skip our tray icons
+// during hover-switching. Menus stay in menuManager so close-on-click
+// and Escape work natively. Only hover-switching is disabled.
+let _origFindMenuForSource = null;
+let _trayMenuOpen = false;
+
+export function setTrayMenuOpen(open) {
+    _trayMenuOpen = open;
+}
+
+export function patchMenuManager() {
+    if (_origFindMenuForSource)
+        return;
+    const mm = Main.panel.menuManager;
+    _origFindMenuForSource = mm._findMenuForSource?.bind(mm);
+    if (!_origFindMenuForSource)
+        return;
+    mm._findMenuForSource = function(source) {
+        // If a tray menu is open, block ALL hover-switching
+        if (_trayMenuOpen)
+            return null;
+        const menu = _origFindMenuForSource(source);
+        // Block switching TO our tray icons from system menus
+        if (menu?.sourceActor?._appIndicatorOwned)
+            return null;
+        return menu;
+    };
+}
+
+export function unpatchMenuManager() {
+    if (_origFindMenuForSource) {
+        Main.panel.menuManager._findMenuForSource = _origFindMenuForSource;
+        _origFindMenuForSource = null;
+    }
+}
 
 export function addIconToPanel(statusIcon) {
     if (!(statusIcon instanceof BaseStatusIcon))
@@ -49,6 +91,23 @@ export function addIconToPanel(statusIcon) {
 
     Main.panel.addToStatusArea(indicatorId, statusIcon, 1,
         settings.get_string('tray-pos'));
+
+    statusIcon._appIndicatorOwned = true;
+
+    // Patch menuManager to skip hover-switching for tray icons.
+    // Menus stay in menuManager (close-on-click, Escape work natively).
+    if (statusIcon instanceof IndicatorStatusIcon) {
+        patchMenuManager();
+        statusIcon.menu.connect('open-state-changed', (_m, isOpen) => {
+            _trayMenuOpen = isOpen;
+        });
+    }
+
+    if (statusIcon instanceof IndicatorStatusIcon) {
+        const manager = OverflowManager.OverflowManager.getDefault();
+        if (manager)
+            manager.registerIcon(statusIcon);
+    }
 
     Util.connectSmart(settings, 'changed::tray-pos', statusIcon, () =>
         addIconToPanel(statusIcon));
@@ -69,6 +128,8 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     _init(menuAlignment, nameText, iconActor, dontCreateMenu) {
         super._init(menuAlignment, nameText, dontCreateMenu);
 
+        this._isOverflowed = false;
+
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
         this.connect('notify::hover', () => this._onHoverChanged());
@@ -83,6 +144,30 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         this._showIfReady();
 
         this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
+    }
+
+    /**
+     * Intercepts all events. Dispatches button presses to _handleButtonPress()
+     * which subclasses can override. Defined here (not in subclasses) so the
+     * GJS vfunc override is registered on the direct GJS subclass of the C-type
+     * PanelMenu.Button — deeper GJS subclasses don't reliably override vfuncs.
+     */
+    vfunc_event(event) {
+        const type = event.type();
+        if (type === Clutter.EventType.TOUCH_BEGIN) {
+            if (this.menu?.numMenuItems)
+                this.menu.toggle();
+            return Clutter.EVENT_STOP;
+        }
+        if (type === Clutter.EventType.BUTTON_PRESS)
+            return this._handleButtonPress(event.get_button(), event);
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    /* Override in subclasses to handle button clicks. */
+    _handleButtonPress(btn, event) {
+        this.menu?.toggle();
+        return Clutter.EVENT_STOP;
     }
 
     _setIconActor(icon) {
@@ -126,7 +211,21 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         throw new GObject.NotImplementedError('uniqueId in %s'.format(this.constructor.name));
     }
 
+    setOverflowed(overflowed) {
+        if (this._isOverflowed === overflowed)
+            return;
+        this._isOverflowed = overflowed;
+        if (overflowed)
+            this.visible = false;
+        else
+            this._showIfReady();
+    }
+
     _showIfReady() {
+        if (this._isOverflowed) {
+            this.visible = false;
+            return;
+        }
         this.visible = this.isReady();
     }
 
@@ -246,17 +345,14 @@ class IndicatorStatusIcon extends BaseStatusIcon {
     _init(indicator) {
         super._init(0.5, indicator.accessibleName,
             new AppIndicator.IconActor(indicator, DEFAULT_ICON_SIZE));
-
-        // Disable upstream's click gesture and fall back to vfunc_button_press_event etc.
-        this._clickGesture?.set_enabled(false);
-
         this._indicator = indicator;
 
-        this._lastClickTime = -1;
-        this._lastClickX = -1;
-        this._lastClickY = -1;
-
         this._box.add_style_class_name('appindicator-box');
+
+        // PanelMenu.Button in GNOME Shell 50+ adds a Clutter.ClickGesture action
+        // that opens the menu on any button click, firing before vfunc_event.
+        // Disable it so our _handleButtonPress() controls left/right click behavior.
+        this._clickGesture?.set_enabled(false);
 
         Util.connectSmart(this._indicator, 'ready', this, this._showIfReady);
         Util.connectSmart(this._indicator, 'menu', this, this._updateMenu);
@@ -272,6 +368,11 @@ class IndicatorStatusIcon extends BaseStatusIcon {
 
         this.connect('notify::visible', () => this._updateMenu());
 
+        this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._ensureManagementMenuItems();
+        });
+
         this._showIfReady();
     }
 
@@ -281,6 +382,9 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             this._menuClient.destroy();
             this._menuClient = null;
         }
+
+        this._mgmtSeparator = null;
+        this._pinMenuItem = null;
 
         super._onDestroy();
     }
@@ -317,6 +421,10 @@ class IndicatorStatusIcon extends BaseStatusIcon {
     }
 
     _updateStatus() {
+        if (this._isOverflowed) {
+            this.visible = false;
+            return;
+        }
         const wasVisible = this.visible;
         this.visible = this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
 
@@ -353,93 +461,97 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             return;
 
         this._updateLabel();
-        this._updateStatus();
         this._updateMenu();
-    }
 
-    _updateClickCount(event) {
-        const [x, y] = event.get_coords();
-        const time = event.get_time();
-        const {doubleClickDistance, doubleClickTime} =
-            Clutter.Settings.get_default();
-
-        if (time > (this._lastClickTime + doubleClickTime) ||
-            (Math.abs(x - this._lastClickX) > doubleClickDistance) ||
-            (Math.abs(y - this._lastClickY) > doubleClickDistance))
-            this._clickCount = 0;
-
-        this._lastClickTime = time;
-        this._lastClickX = x;
-        this._lastClickY = y;
-
-        this._clickCount = (this._clickCount % 2) + 1;
-
-        return this._clickCount;
-    }
-
-    _maybeHandleDoubleClick(event) {
-        if (this._indicator.supportsActivation === false)
-            return Clutter.EVENT_PROPAGATE;
-
-        if (event.get_button() !== Clutter.BUTTON_PRIMARY)
-            return Clutter.EVENT_PROPAGATE;
-
-        if (this._updateClickCount(event) === 2) {
-            this._indicator.open(...event.get_coords(), event.get_time());
-            return Clutter.EVENT_STOP;
+        if (this._isOverflowed) {
+            this.visible = false;
+            return;
         }
 
-        return Clutter.EVENT_PROPAGATE;
+        this._updateStatus();
     }
 
-    async _waitForDoubleClick() {
-        const {doubleClickTime} = Clutter.Settings.get_default();
-        this._waitDoubleClickPromise = new PromiseUtils.TimeoutPromise(
-            doubleClickTime);
+    _ensureManagementMenuItems() {
+        const manager =
+            OverflowManager.OverflowManager.getDefault();
+        if (!manager || !this._indicator?.appId)
+            return;
 
-        try {
-            await this._waitDoubleClickPromise;
-            this.menu.toggle();
-        } catch (e) {
-            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                throw e;
-        } finally {
-            delete this._waitDoubleClickPromise;
-        }
-    }
+        const settings = SettingsManager.getDefaultGSettings();
+        if (!settings.get_boolean('pin-mode-enabled'))
+            return;
 
-    vfunc_event(event) {
-        if (this.menu.numMenuItems && event.type() === Clutter.EventType.TOUCH_BEGIN)
-            this.menu.toggle();
+        this._destroyManagementMenuItems();
 
-        return Clutter.EVENT_PROPAGATE;
-    }
+        const appId = this._indicator.appId;
+        const isHidden = manager.isHidden(appId);
 
-    vfunc_button_press_event(event) {
-        if (this._waitDoubleClickPromise)
-            this._waitDoubleClickPromise.cancel();
+        this._mgmtSeparator =
+            new PopupMenu.PopupSeparatorMenuItem();
+        this._mgmtSeparator.connect('destroy', () => {
+            this._mgmtSeparator = null;
+        });
 
-        // if middle mouse button clicked send SecondaryActivate dbus event and do not show appindicator menu
-        if (event.get_button() === Clutter.BUTTON_MIDDLE) {
-            if (Main.panel.menuManager.activeMenu)
-                Main.panel.menuManager._closeMenu(true, Main.panel.menuManager.activeMenu);
-            this._indicator.secondaryActivate(event.get_time(), ...event.get_coords());
-            return Clutter.EVENT_STOP;
-        }
-
-        if (event.get_button() === Clutter.BUTTON_SECONDARY) {
-            this.menu.toggle();
-            return Clutter.EVENT_PROPAGATE;
-        }
-
-        const doubleClickHandled = this._maybeHandleDoubleClick(event);
-        if (doubleClickHandled === Clutter.EVENT_PROPAGATE &&
-            event.get_button() === Clutter.BUTTON_PRIMARY &&
-            this.menu.numMenuItems) {
-            if (this._indicator.supportsActivation !== false)
-                this._waitForDoubleClick().catch(logError);
+        this._hideMenuItem = new PopupMenu.PopupMenuItem(
+            isHidden ? 'Show on Panel' : 'Hide from Panel'
+        );
+        this._hideMenuItem.connect('destroy', () => {
+            this._hideMenuItem = null;
+        });
+        this._hideMenuItem.connect('activate', () => {
+            if (isHidden)
+                manager.unhideIcon(appId);
             else
-                this.menu.toggle();
+                manager.hideIcon(appId);
+        });
+
+        this.menu.addMenuItem(this._mgmtSeparator);
+        this.menu.addMenuItem(this._hideMenuItem);
+    }
+
+    _destroyManagementMenuItems() {
+        if (this._mgmtSeparator) {
+            this._mgmtSeparator.destroy();
+            this._mgmtSeparator = null;
+        }
+        if (this._hideMenuItem) {
+            this._hideMenuItem.destroy();
+            this._hideMenuItem = null;
+        }
+    }
+
+    _handleButtonPress(btn, event) {
+        // Middle click: SecondaryActivate via DBus
+        if (btn === Clutter.BUTTON_MIDDLE) {
+            if (Main.panel.menuManager.activeMenu) {
+                Main.panel.menuManager._closeMenu(
+                    true,
+                    Main.panel.menuManager.activeMenu
+                );
+            }
+            this._indicator.secondaryActivate(
+                event.get_time(),
+                ...event.get_coords()
+            );
+            return Clutter.EVENT_STOP;
+        }
+
+        // Right click: context menu
+        if (btn === Clutter.BUTTON_SECONDARY) {
+            this.menu.toggle();
+            return Clutter.EVENT_STOP;
+        }
+
+        // Left click: toggle windows or call Activate via DBus
+        if (btn === Clutter.BUTTON_PRIMARY) {
+            if (WindowManager.toggleWindows(this._indicator))
+                return Clutter.EVENT_STOP;
+
+            this._indicator.open(
+                ...event.get_coords(),
+                event.get_time()
+            );
+            return Clutter.EVENT_STOP;
         }
 
         return Clutter.EVENT_PROPAGATE;

@@ -18,16 +18,16 @@ import * as Extension from 'resource:///org/gnome/shell/extensions/extension.js'
 
 import * as StatusNotifierWatcher from './statusNotifierWatcher.js';
 import * as Interfaces from './interfaces.js';
+import * as OverflowManager from './overflowManager.js';
 import * as TrayIconsManager from './trayIconsManager.js';
 import * as Util from './util.js';
-import {Logger} from './logger.js';
 import {SettingsManager} from './settingsManager.js';
 
 export default class AppIndicatorExtension extends Extension.Extension {
     constructor(...args) {
         super(...args);
 
-        Logger.init(this);
+        Util.Logger.init(this);
         Interfaces.initialize(this);
 
         this._isEnabled = false;
@@ -43,7 +43,7 @@ export default class AppIndicatorExtension extends Extension.Extension {
             global['--appindicator-extension-on-reload']();
 
         global['--appindicator-extension-on-reload'] = () => {
-            Logger.debug('Reload detected, destroying old watchdog');
+            Util.Logger.debug('Reload detected, destroying old watchdog');
             this._watchDog.destroy();
             this._watchDog = null;
         };
@@ -53,6 +53,7 @@ export default class AppIndicatorExtension extends Extension.Extension {
     enable() {
         this._isEnabled = true;
         SettingsManager.initialize(this);
+        OverflowManager.OverflowManager.initialize();
         Util.tryCleanupOldIndicators();
         this._maybeEnableAfterNameAvailable();
         TrayIconsManager.TrayIconsManager.initialize();
@@ -67,6 +68,7 @@ export default class AppIndicatorExtension extends Extension.Extension {
             this._statusNotifierWatcher = null;
         }
 
+        OverflowManager.OverflowManager.destroy();
         SettingsManager.destroy();
     }
 
@@ -78,13 +80,13 @@ export default class AppIndicatorExtension extends Extension.Extension {
     // to find out when the name vanished so we can reclaim it again.
     _maybeEnableAfterNameAvailable() {
         // by the time we get called whe might not be enabled
-        if (!this._isEnabled || this._statusNotifierWatcher)
+        if (!this._isEnabled || this._statusNotifierWatcher || !this._watchDog)
             return;
 
         if (this._watchDog.nameAcquired && this._watchDog.nameOnBus)
             return;
 
         this._statusNotifierWatcher = new StatusNotifierWatcher.StatusNotifierWatcher(
-            this, this._watchDog);
+            this._watchDog);
     }
 }

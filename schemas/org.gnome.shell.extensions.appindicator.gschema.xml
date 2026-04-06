@@ -45,5 +45,20 @@
       <summary>Custom icons</summary>
       <description>Replace any icons with custom icons from themes</description>
     </key>
+    <key name="pin-mode-enabled" type="b">
+      <default>false</default>
+      <summary>Enable pin mode</summary>
+      <description>When enabled, only pinned indicators are shown on the panel. Others go to the overflow menu. When disabled, all indicators are shown as usual.</description>
+    </key>
+    <key name="hidden-icons" type="as">
+      <default>[]</default>
+      <summary>Hidden indicator IDs</summary>
+      <description>List of indicator IDs hidden from the panel into the overflow menu.</description>
+    </key>
+    <key name="known-indicators" type="a(ss)">
+      <default>[]</default>
+      <summary>Known indicators</summary>
+      <description>List of indicator ID and title pairs seen by the extension, used by preferences UI.</description>
+    </key>
   </schema>
 </schemalist>
