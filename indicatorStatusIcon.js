@@ -23,6 +23,7 @@ import * as AppDisplay from 'resource:///org/gnome/shell/ui/appDisplay.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Panel from 'resource:///org/gnome/shell/ui/panel.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import * as AppIndicator from './appIndicator.js';
 import * as OverflowManager from './overflowManager.js';
@@ -295,6 +296,11 @@ class IndicatorStatusIcon extends BaseStatusIcon {
 
         this.connect('notify::visible', () => this._updateMenu());
 
+        this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._ensureManagementMenuItems();
+        });
+
         this._showIfReady();
     }
 
@@ -304,6 +310,9 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             this._menuClient.destroy();
             this._menuClient = null;
         }
+
+        this._mgmtSeparator = null;
+        this._hideMenuItem = null;
 
         super._onDestroy();
     }
@@ -378,6 +387,61 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         this._updateLabel();
         this._updateStatus();
         this._updateMenu();
+    }
+
+    /**
+     * Ensure that the "Hide from Panel" / "Show on Panel" entry exists
+     * at the bottom of the indicator's context menu while pin mode is
+     * enabled. Called every time the menu opens because the DBusMenu
+     * client may rebuild menu items asynchronously.
+     */
+    _ensureManagementMenuItems() {
+        const manager =
+            OverflowManager.OverflowManager.getDefault();
+        if (!manager || !this._indicator?.appId)
+            return;
+
+        const settings = SettingsManager.getDefaultGSettings();
+        if (!settings.get_boolean('pin-mode-enabled'))
+            return;
+
+        this._destroyManagementMenuItems();
+
+        const appId = this._indicator.appId;
+        const isHidden = manager.isHidden(appId);
+
+        this._mgmtSeparator =
+            new PopupMenu.PopupSeparatorMenuItem();
+        this._mgmtSeparator.connect('destroy', () => {
+            this._mgmtSeparator = null;
+        });
+
+        this._hideMenuItem = new PopupMenu.PopupMenuItem(
+            isHidden ? 'Show on Panel' : 'Hide from Panel'
+        );
+        this._hideMenuItem.connect('destroy', () => {
+            this._hideMenuItem = null;
+        });
+        this._hideMenuItem.connect('activate', () => {
+            if (isHidden)
+                manager.unhideIcon(appId);
+            else
+                manager.hideIcon(appId);
+        });
+
+        this.menu.addMenuItem(this._mgmtSeparator);
+        this.menu.addMenuItem(this._hideMenuItem);
+    }
+
+    _destroyManagementMenuItems() {
+        if (this._mgmtSeparator) {
+            this._mgmtSeparator.destroy();
+            this._mgmtSeparator = null;
+        }
+        if (this._hideMenuItem) {
+            this._hideMenuItem.destroy();
+            this._hideMenuItem = null;
+        }
     }
 
     _updateClickCount(event) {
