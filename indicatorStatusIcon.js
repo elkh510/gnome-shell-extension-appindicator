@@ -25,6 +25,7 @@ import * as Panel from 'resource:///org/gnome/shell/ui/panel.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 import * as AppIndicator from './appIndicator.js';
+import * as OverflowManager from './overflowManager.js';
 import * as PromiseUtils from './promiseUtils.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
@@ -50,6 +51,12 @@ export function addIconToPanel(statusIcon) {
     Main.panel.addToStatusArea(indicatorId, statusIcon, 1,
         settings.get_string('tray-pos'));
 
+    if (statusIcon instanceof IndicatorStatusIcon) {
+        const manager = OverflowManager.OverflowManager.getDefault();
+        if (manager)
+            manager.registerIcon(statusIcon);
+    }
+
     Util.connectSmart(settings, 'changed::tray-pos', statusIcon, () =>
         addIconToPanel(statusIcon));
 }
@@ -68,6 +75,8 @@ export const BaseStatusIcon = GObject.registerClass(
 class IndicatorBaseStatusIcon extends PanelMenu.Button {
     _init(menuAlignment, nameText, iconActor, dontCreateMenu) {
         super._init(menuAlignment, nameText, dontCreateMenu);
+
+        this._isOverflowed = false;
 
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
@@ -126,7 +135,21 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         throw new GObject.NotImplementedError('uniqueId in %s'.format(this.constructor.name));
     }
 
+    setOverflowed(overflowed) {
+        if (this._isOverflowed === overflowed)
+            return;
+        this._isOverflowed = overflowed;
+        if (overflowed)
+            this.visible = false;
+        else
+            this._showIfReady();
+    }
+
     _showIfReady() {
+        if (this._isOverflowed) {
+            this.visible = false;
+            return;
+        }
         this.visible = this.isReady();
     }
 
