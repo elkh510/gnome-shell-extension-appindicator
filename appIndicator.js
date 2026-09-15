@@ -551,11 +551,14 @@ var AppIndicator = class AppIndicatorsAppIndicator {
      * and similar apps indistinguishable from each other when stored
      * in GSettings. To work around that we derive the basename of the
      * executable from `_commandLine` and use it as the identifier.
-     * Non-Electron apps continue to use their SNI id.
+     * The same applies to Go systray apps, whose `systray_<pid>` id changes
+     * on every start. Other apps continue to use their SNI id.
      */
     get appId() {
         const { id } = this;
-        if (this._commandLine && id && id.startsWith('chrome_status_icon')) {
+        const unstableId = id &&
+            (id.startsWith('chrome_status_icon') || /^systray_\d+$/.test(id));
+        if (this._commandLine && unstableId) {
             const exe = this._commandLine.trim().split(/\s+/)[0];
             const basename = exe.split('/').pop();
             if (basename)

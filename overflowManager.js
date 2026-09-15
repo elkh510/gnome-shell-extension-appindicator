@@ -29,6 +29,7 @@ const AppIndicator = Extension.imports.appIndicator;
 const OverflowButton = Extension.imports.overflowButton;
 const SettingsManager = Extension.imports.settingsManager;
 const Util = Extension.imports.util;
+const WindowManager = Extension.imports.windowManager;
 
 const OVERFLOW_BUTTON_ROLE = 'appindicator-overflow';
 
@@ -132,7 +133,8 @@ var OverflowManager = class AppIndicatorsOverflowManager {
         const settings = SettingsManager.getDefaultGSettings();
         const known = settings.get_value('known-indicators').deep_unpack();
         const id = indicator.appId;
-        const title = indicator.title || indicator.id || id;
+        const title = WindowManager.findDesktopApp(indicator)?.get_name() ||
+            indicator.title || indicator.id || id;
 
         const idx = known.findIndex(pair => pair[0] === id);
         if (idx >= 0) {

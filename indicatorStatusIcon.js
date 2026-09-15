@@ -38,6 +38,7 @@ const OverflowManager = Extension.imports.overflowManager;
 const Util = Extension.imports.util;
 const PromiseUtils = Extension.imports.promiseUtils;
 const SettingsManager = Extension.imports.settingsManager;
+const WindowManager = Extension.imports.windowManager;
 
 function addIconToPanel(statusIcon) {
     if (!(statusIcon instanceof BaseStatusIcon))
@@ -539,6 +540,12 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
             return Clutter.EVENT_PROPAGATE;
         }
 
+        // Left click raises or minimizes the app windows, like a taskbar entry
+        this._windowsToggled = buttonEvent.button === Clutter.BUTTON_PRIMARY &&
+            WindowManager.toggleWindows(this._indicator, buttonEvent.time);
+        if (this._windowsToggled)
+            return Clutter.EVENT_STOP;
+
         const doubleClickHandled = this._maybeHandleDoubleClick(buttonEvent);
         if (doubleClickHandled === Clutter.EVENT_PROPAGATE &&
             buttonEvent.button === Clutter.BUTTON_PRIMARY &&
@@ -553,6 +560,9 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
     }
 
     vfunc_button_release_event(buttonEvent) {
+        if (this._windowsToggled)
+            return Clutter.EVENT_STOP;
+
         if (!this._indicator.supportsActivation)
             return this._maybeHandleDoubleClick(buttonEvent);
 
@@ -590,7 +600,11 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
             return Clutter.EVENT_PROPAGATE;
         });
         this.connect('button-release-event', (_actor, event) => {
-            this._icon.click(event);
+            // Left click raises or minimizes the app windows, like a taskbar
+            // entry; the icon only gets the click when no app is found
+            if (event.get_button() !== Clutter.BUTTON_PRIMARY ||
+                !WindowManager.toggleTrayIconWindows(this._icon, event.get_time()))
+                this._icon.click(event);
             this.remove_style_pseudo_class('active');
             return Clutter.EVENT_PROPAGATE;
         });

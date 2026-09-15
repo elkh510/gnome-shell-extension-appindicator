@@ -20,6 +20,7 @@ const Clutter = imports.gi.Clutter;
 const GObject = imports.gi.GObject;
 const St = imports.gi.St;
 
+const Panel = imports.ui.panel;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
 
@@ -27,14 +28,13 @@ const ExtensionUtils = imports.misc.extensionUtils;
 const Extension = ExtensionUtils.getCurrentExtension();
 
 // Circular imports: only dereference module members inside methods
+const AppIndicator = Extension.imports.appIndicator;
 const DBusMenu = Extension.imports.dbusMenu;
 const IndicatorStatusIcon = Extension.imports.indicatorStatusIcon;
 const OverflowManager = Extension.imports.overflowManager;
 const SettingsManager = Extension.imports.settingsManager;
 const Util = Extension.imports.util;
 const WindowManager = Extension.imports.windowManager;
-
-const FALLBACK_ICON_NAME = 'application-x-executable-symbolic';
 
 var OverflowButton = GObject.registerClass(
 class AppIndicatorsOverflowButton extends PanelMenu.Button {
@@ -89,19 +89,20 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
             if (!indicator)
                 continue;
 
-            const appId = indicator.appId;
-            const label = indicator.title || appId || 'Unknown';
+            const desktopApp = WindowManager.findDesktopApp(indicator);
+            const label = desktopApp?.get_name() || indicator.title ||
+                indicator.appId || 'Unknown';
 
             // Use PopupSubMenuMenuItem: left click = activate window,
             // right click / keyboard = show app menu + "Show on Panel"
-            const subMenu = new PopupMenu.PopupSubMenuMenuItem(label, true);
+            const subMenu = new PopupMenu.PopupSubMenuMenuItem(label, false);
 
-            // Use gicon from the actual tray icon for proper rendering
-            const gicon = statusIcon.icon?.gicon;
-            if (gicon)
-                subMenu.icon.gicon = gicon;
-            else
-                subMenu.icon.icon_name = FALLBACK_ICON_NAME;
+            // Same icon as on the panel: a live icon actor of the indicator,
+            // at the panel size, following icon changes
+            const iconActor = new AppIndicator.IconActor(indicator,
+                Panel.PANEL_ICON_SIZE);
+            iconActor.reactive = false;
+            subMenu.insert_child_at_index(iconActor, 0);
 
             // Left click on the row = activate/toggle window + close overflow.
             // Handled on release: PopupSubMenuMenuItem toggles its submenu in
@@ -113,7 +114,7 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
                 // Normally cleared by the skipped class handler
                 actor.remove_style_pseudo_class('active');
 
-                if (!WindowManager.toggleWindows(indicator))
+                if (!WindowManager.toggleWindows(indicator, event.get_time()))
                     indicator.open(...event.get_coords(), event.get_time());
                 this.menu.close();
                 return Clutter.EVENT_STOP;
