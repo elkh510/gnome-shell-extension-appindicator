@@ -240,6 +240,7 @@ var OverflowManager = class AppIndicatorsOverflowManager {
                 this._addOverflowButtonToPanel();
             }
             this._overflowButton.updateMenu(overflowedIcons);
+            this._placeOverflowButton();
         } else if (this._overflowButton) {
             this._overflowButton.destroy();
             this._overflowButton = null;
@@ -263,11 +264,48 @@ var OverflowManager = class AppIndicatorsOverflowManager {
 
         Main.panel.addToStatusArea(OVERFLOW_BUTTON_ROLE,
             this._overflowButton, -1, settings.get_string('tray-pos'));
+        this._placeOverflowButton();
+    }
+
+    // Moves the button right after the last indicator icon of its panel box.
+    // Icons are always inserted at index 1, so once placed the button stays
+    // after them without further moves.
+    _placeOverflowButton() {
+        const container = this._overflowButton?.container;
+        const parent = container?.get_parent();
+        if (!parent)
+            return;
+
+        const children = parent.get_children();
+        let lastIconIndex = -1;
+        for (const [role, indicator] of Object.entries(Main.panel.statusArea)) {
+            if (!indicator || role === OVERFLOW_BUTTON_ROLE ||
+                !role.startsWith('appindicator-'))
+                continue;
+
+            lastIconIndex = Math.max(lastIconIndex,
+                children.indexOf(indicator.container));
+        }
+
+        if (lastIconIndex < 0)
+            return;
+
+        // set_child_at_index() removes the child before inserting it again
+        const currentIndex = children.indexOf(container);
+        const targetIndex = currentIndex < lastIconIndex
+            ? lastIconIndex : lastIconIndex + 1;
+        if (currentIndex !== targetIndex)
+            parent.set_child_at_index(container, targetIndex);
     }
 
     _onTrayPosChanged() {
-        if (this._overflowButton)
-            this._addOverflowButtonToPanel();
+        if (!this._overflowButton)
+            return;
+
+        this._addOverflowButtonToPanel();
+        // Icons move to the new box in their own tray-pos handlers, place the
+        // button again once all of them are done
+        this._scheduleUpdate();
     }
 
     destroy() {
