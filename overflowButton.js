@@ -28,7 +28,10 @@ const Extension = ExtensionUtils.getCurrentExtension();
 
 // Circular imports: only dereference module members inside methods
 const DBusMenu = Extension.imports.dbusMenu;
+const IndicatorStatusIcon = Extension.imports.indicatorStatusIcon;
 const OverflowManager = Extension.imports.overflowManager;
+const SettingsManager = Extension.imports.settingsManager;
+const Util = Extension.imports.util;
 const WindowManager = Extension.imports.windowManager;
 
 const FALLBACK_ICON_NAME = 'application-x-executable-symbolic';
@@ -56,6 +59,13 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
         });
         box.add_child(icon);
         this.add_child(box);
+
+        const settings = SettingsManager.getDefaultGSettings();
+        const updateStyle = () =>
+            IndicatorStatusIcon.updateCompactModeStyle(this);
+        Util.connectSmart(settings, 'changed::compact-mode-enabled', this, updateStyle);
+        Util.connectSmart(settings, 'changed::icon-spacing', this, updateStyle);
+        updateStyle();
     }
 
     _onEntryMenuOpened(submenu) {

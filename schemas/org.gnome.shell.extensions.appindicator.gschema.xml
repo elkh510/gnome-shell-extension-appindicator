@@ -30,6 +30,11 @@
       <summary>Icon spacing</summary>
       <description>Icon spacing within the tray</description>
     </key>
+    <key name="compact-mode-enabled" type="b">
+      <default>false</default>
+      <summary>Compact mode</summary>
+      <description>Use icon-spacing as the horizontal padding of each indicator instead of the theme default.</description>
+    </key>
     <key name="tray-pos" type="s">
       <default>"right"</default>
       <summary>Position in tray</summary>

@@ -15,7 +15,8 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 /* exported BaseStatusIcon, IndicatorStatusIcon, IndicatorStatusTrayIcon,
-            addIconToPanel, getTrayIcons, getAppIndicatorIcons */
+            addIconToPanel, getTrayIcons, getAppIndicatorIcons,
+            updateCompactModeStyle */
 
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
@@ -66,6 +67,23 @@ function addIconToPanel(statusIcon) {
         addIconToPanel(statusIcon));
 }
 
+// Applies the compact mode horizontal padding (from icon-spacing) to a panel
+// button, or restores the theme default when compact mode is disabled
+function updateCompactModeStyle(button) {
+    const settings = SettingsManager.getDefaultGSettings();
+    let style = null;
+
+    if (settings.get_boolean('compact-mode-enabled')) {
+        const spacing = Math.max(settings.get_int('icon-spacing'), 0);
+        style = `-natural-hpadding: ${spacing}px; ` +
+            `-minimum-hpadding: ${Math.min(spacing, 6)}px`;
+    }
+
+    button.set_style(style);
+    // ButtonBox only caches the paddings on style change, it does not relayout
+    button.queue_relayout();
+}
+
 function getTrayIcons() {
     return Object.values(Main.panel.statusArea).filter(
         i => i instanceof IndicatorStatusTrayIcon);
@@ -86,6 +104,11 @@ class AppIndicatorsIndicatorBaseStatusIcon extends PanelMenu.Button {
 
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
+        Util.connectSmart(settings, 'changed::compact-mode-enabled', this,
+            () => updateCompactModeStyle(this));
+        Util.connectSmart(settings, 'changed::icon-spacing', this,
+            () => updateCompactModeStyle(this));
+        updateCompactModeStyle(this);
         this.connect('notify::hover', () => this._onHoverChanged());
 
         if (!super._onDestroy)

@@ -268,6 +268,48 @@ class AppIndicatorPreferences extends Gtk.Box {
             this.icon_size_hbox.pack_start(widget, false, false, 0);
         }
 
+        // Compact mode
+        this.compact_mode_hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 10,
+            margin_start: 10,
+            margin_end: 10,
+            margin_top: 10,
+            margin_bottom: 10 });
+        label = new Gtk.Label({
+            label: _('Compact mode'),
+            hexpand: true,
+            halign: Gtk.Align.START,
+        });
+        widget = new Gtk.Switch({ halign: Gtk.Align.END });
+        this._settings.bind('compact-mode-enabled', widget, 'active',
+            Gio.SettingsBindFlags.DEFAULT);
+        appendChild(this.compact_mode_hbox, label, true);
+        appendChild(this.compact_mode_hbox, widget);
+
+        // Icon spacing, only used in compact mode
+        this.icon_spacing_hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 10,
+            margin_start: 10,
+            margin_end: 10,
+            margin_top: 10,
+            margin_bottom: 10 });
+        label = new Gtk.Label({
+            label: _('Icon spacing in compact mode (min: 0, max: 24)'),
+            hexpand: true,
+            halign: Gtk.Align.START,
+        });
+        widget = new Gtk.SpinButton({ halign: Gtk.Align.END });
+        widget.set_range(0, 24);
+        widget.set_value(this._settings.get_int('icon-spacing'));
+        widget.set_increments(1, 2);
+        widget.connect('value-changed', w => {
+            this._settings.set_int('icon-spacing', w.get_value_as_int());
+        });
+        this._settings.bind('compact-mode-enabled', widget, 'sensitive',
+            Gio.SettingsBindFlags.GET);
+        appendChild(this.icon_spacing_hbox, label, true);
+        appendChild(this.icon_spacing_hbox, widget);
+
         // Tray position in panel
         this.tray_position_hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL,
             spacing: 10,
@@ -297,6 +339,8 @@ class AppIndicatorPreferences extends Gtk.Box {
             this.preferences_vbox.append(this.brightness_hbox);
             this.preferences_vbox.append(this.contrast_hbox);
             this.preferences_vbox.append(this.icon_size_hbox);
+            this.preferences_vbox.append(this.compact_mode_hbox);
+            this.preferences_vbox.append(this.icon_spacing_hbox);
             this.preferences_vbox.append(this.tray_position_hbox);
         } else {
             this.tray_position_hbox.pack_start(label, true, true, 0);
@@ -309,6 +353,8 @@ class AppIndicatorPreferences extends Gtk.Box {
             this.preferences_vbox.pack_start(this.brightness_hbox, true, false, 0);
             this.preferences_vbox.pack_start(this.contrast_hbox, true, false, 0);
             this.preferences_vbox.pack_start(this.icon_size_hbox, true, false, 0);
+            this.preferences_vbox.pack_start(this.compact_mode_hbox, true, false, 0);
+            this.preferences_vbox.pack_start(this.icon_spacing_hbox, true, false, 0);
             this.preferences_vbox.pack_start(this.tray_position_hbox, true, false, 0);
         }
 
