@@ -32,6 +32,24 @@ function init() {
     ExtensionUtils.initTranslations();
 }
 
+// Appends a child to a Gtk.Box or Gtk.ListBox using the Gtk 4 or Gtk 3 API
+function appendChild(container, child, expand = false) {
+    if (imports.gi.versions.Gtk === '4.0')
+        container.append(child);
+    else if (container instanceof Gtk.Box)
+        container.pack_start(child, expand, expand, 0);
+    else
+        container.add(child);
+}
+
+// Sets the single child of a bin-like container using the Gtk 4 or Gtk 3 API
+function setChild(container, child) {
+    if (imports.gi.versions.Gtk === '4.0')
+        container.set_child(child);
+    else
+        container.add(child);
+}
+
 const AppIndicatorPreferences = GObject.registerClass(
 class AppIndicatorPreferences extends Gtk.Box {
     _init() {
@@ -79,6 +97,35 @@ class AppIndicatorPreferences extends Gtk.Box {
             this.legacy_tray_hbox.pack_start(label, true, true, 0);
             this.legacy_tray_hbox.pack_start(widget, false, false, 0);
         }
+
+        // Pin mode
+        this.pin_mode_hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 10,
+            margin_start: 10,
+            margin_end: 10,
+            margin_top: 10,
+            margin_bottom: 10 });
+        const pinModeLabelsBox = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL,
+            spacing: 2,
+            hexpand: true });
+        label = new Gtk.Label({
+            label: _('Pin Mode'),
+            halign: Gtk.Align.START,
+        });
+        const pinModeHint = new Gtk.Label({
+            label: _('Right-click indicators to hide them into the overflow menu'),
+            halign: Gtk.Align.START,
+        });
+        pinModeHint.get_style_context().add_class('dim-label');
+        widget = new Gtk.Switch({ halign: Gtk.Align.END, valign: Gtk.Align.CENTER });
+
+        this._settings.bind('pin-mode-enabled', widget, 'active',
+            Gio.SettingsBindFlags.DEFAULT);
+
+        appendChild(pinModeLabelsBox, label);
+        appendChild(pinModeLabelsBox, pinModeHint);
+        appendChild(this.pin_mode_hbox, pinModeLabelsBox, true);
+        appendChild(this.pin_mode_hbox, widget);
 
         // Icon opacity
         this.opacity_hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL,
@@ -244,6 +291,7 @@ class AppIndicatorPreferences extends Gtk.Box {
             this.tray_position_hbox.append(widget);
 
             this.preferences_vbox.append(this.legacy_tray_hbox);
+            this.preferences_vbox.append(this.pin_mode_hbox);
             this.preferences_vbox.append(this.opacity_hbox);
             this.preferences_vbox.append(this.saturation_hbox);
             this.preferences_vbox.append(this.brightness_hbox);
@@ -255,6 +303,7 @@ class AppIndicatorPreferences extends Gtk.Box {
             this.tray_position_hbox.pack_start(widget, false, false, 0);
 
             this.preferences_vbox.pack_start(this.legacy_tray_hbox, true, false, 0);
+            this.preferences_vbox.pack_start(this.pin_mode_hbox, true, false, 0);
             this.preferences_vbox.pack_start(this.opacity_hbox, true, false, 0);
             this.preferences_vbox.pack_start(this.saturation_hbox, true, false, 0);
             this.preferences_vbox.pack_start(this.brightness_hbox, true, false, 0);
@@ -358,16 +407,198 @@ class AppIndicatorPreferences extends Gtk.Box {
             }
         });
 
+        // Indicators section
+        this.indicators_vbox = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL,
+            spacing: 10,
+            margin_start: 10,
+            margin_end: 10,
+            margin_top: 10,
+            margin_bottom: 10 });
+
+        const indicatorsHint = new Gtk.Label({
+            label: _('Hide indicators from the panel when Pin Mode is enabled. ' +
+                'Hidden indicators go to the overflow menu.'),
+            halign: Gtk.Align.START,
+            xalign: 0,
+            wrap: true,
+        });
+        indicatorsHint.get_style_context().add_class('dim-label');
+
+        this._indicatorsListBox = new Gtk.ListBox({
+            selection_mode: Gtk.SelectionMode.NONE,
+        });
+        this._indicatorsListBox.set_placeholder(new Gtk.Label({
+            label: _('No indicators have been seen yet'),
+            visible: true,
+            margin_top: 20,
+            margin_bottom: 20,
+        }));
+
+        const indicatorsScrolled = new Gtk.ScrolledWindow({
+            hscrollbar_policy: Gtk.PolicyType.NEVER,
+            hexpand: true,
+            vexpand: true,
+        });
+        setChild(indicatorsScrolled, this._indicatorsListBox);
+
+        appendChild(this.indicators_vbox, indicatorsHint);
+        appendChild(this.indicators_vbox, indicatorsScrolled, true);
+
+        this._indicatorRows = [];
+        this._updatingIndicators = false;
+        this._syncIndicators();
+
+        this._settingsChangedIds = [
+            this._settings.connect('changed::known-indicators',
+                () => this._syncIndicators()),
+            this._settings.connect('changed::hidden-icons',
+                () => this._syncIndicators()),
+        ];
+        this.connect('destroy', () => this._onDestroy());
+
         this.notebook = new Gtk.Notebook();
         this.notebook.append_page(this.preferences_vbox,
             new Gtk.Label({ label: _('Preferences') }));
         this.notebook.append_page(this.custom_icons_vbox,
             new Gtk.Label({ label: _('Custom Icons') }));
+        this.notebook.append_page(this.indicators_vbox,
+            new Gtk.Label({ label: _('Indicators') }));
 
         if (imports.gi.versions.Gtk === '4.0')
             this.append(this.notebook);
         else
             this.add(this.notebook);
+    }
+
+    _onDestroy() {
+        this._settingsChangedIds.forEach(id => this._settings.disconnect(id));
+        this._settingsChangedIds = [];
+    }
+
+    // Rebuilds the indicator rows from the known-indicators and hidden-icons keys
+    _syncIndicators() {
+        // Our own writes emit changed synchronously: the widgets already
+        // reflect them, so skip rebuilding rows from inside their handlers
+        if (this._updatingIndicators)
+            return;
+
+        const known = this._settings.get_value('known-indicators').deep_unpack();
+        const hiddenIds = this._settings.get_strv('hidden-icons');
+
+        this._indicatorRows.forEach(({ row }) => this._indicatorsListBox.remove(row));
+        this._indicatorRows = known.map(([appId, title]) => {
+            const row = this._createIndicatorRow(appId, title || appId,
+                hiddenIds.includes(appId));
+            appendChild(this._indicatorsListBox, row);
+            return { appId, row };
+        });
+    }
+
+    _createIndicatorRow(appId, title, hidden) {
+        const rowBox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 10,
+            margin_start: 10,
+            margin_end: 10,
+            margin_top: 6,
+            margin_bottom: 6 });
+
+        const labelsBox = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL,
+            spacing: 2,
+            hexpand: true,
+            valign: Gtk.Align.CENTER });
+        appendChild(labelsBox, new Gtk.Label({
+            label: title,
+            halign: Gtk.Align.START,
+        }));
+        const appIdLabel = new Gtk.Label({
+            label: appId,
+            halign: Gtk.Align.START,
+        });
+        appIdLabel.get_style_context().add_class('dim-label');
+        appendChild(labelsBox, appIdLabel);
+
+        const hideLabel = new Gtk.Label({
+            label: _('Hide'),
+            valign: Gtk.Align.CENTER,
+        });
+        hideLabel.get_style_context().add_class('dim-label');
+
+        // Set the initial state before connecting, so it does not write back
+        const hiddenSwitch = new Gtk.Switch({
+            active: hidden,
+            valign: Gtk.Align.CENTER,
+            tooltip_text: _('Hide from Panel'),
+        });
+        hiddenSwitch.connect('notify::active', sw =>
+            this._setIndicatorHidden(appId, sw.get_active()));
+
+        let removeButton;
+        if (imports.gi.versions.Gtk === '4.0') {
+            removeButton = new Gtk.Button({ icon_name: 'user-trash-symbolic' });
+        } else {
+            removeButton = new Gtk.Button({
+                image: new Gtk.Image({ icon_name: 'user-trash-symbolic' }),
+            });
+        }
+        removeButton.set_valign(Gtk.Align.CENTER);
+        removeButton.set_tooltip_text(_('Remove'));
+        removeButton.get_style_context().add_class('flat');
+
+        appendChild(rowBox, labelsBox, true);
+        appendChild(rowBox, hideLabel);
+        appendChild(rowBox, hiddenSwitch);
+        appendChild(rowBox, removeButton);
+
+        removeButton.connect('clicked', () => this._removeKnownIndicator(appId));
+
+        const row = new Gtk.ListBoxRow({ activatable: false });
+        setChild(row, rowBox);
+
+        // Gtk 3 widgets are hidden by default and rows can be added after show_all()
+        if (row.show_all)
+            row.show_all();
+
+        return row;
+    }
+
+    _setIndicatorHidden(appId, hidden) {
+        const hiddenIds = this._settings.get_strv('hidden-icons');
+        if (hidden === hiddenIds.includes(appId))
+            return;
+
+        const newHiddenIds = hidden ? [...hiddenIds, appId]
+            : hiddenIds.filter(id => id !== appId);
+
+        this._updatingIndicators = true;
+        try {
+            this._settings.set_strv('hidden-icons', newHiddenIds);
+        } finally {
+            this._updatingIndicators = false;
+        }
+    }
+
+    _removeKnownIndicator(appId) {
+        const known = this._settings.get_value('known-indicators').deep_unpack();
+        const filtered = known.filter(([id]) => id !== appId);
+
+        if (filtered.length !== known.length) {
+            this._updatingIndicators = true;
+            try {
+                this._settings.set_value('known-indicators',
+                    new GLib.Variant('a(ss)', filtered));
+            } finally {
+                this._updatingIndicators = false;
+            }
+        }
+
+        // Drop only the affected rows instead of rebuilding the whole list
+        // from inside the button handler
+        this._indicatorRows = this._indicatorRows.filter(({ appId: id, row }) => {
+            if (id !== appId)
+                return true;
+            this._indicatorsListBox.remove(row);
+            return false;
+        });
     }
 });
 

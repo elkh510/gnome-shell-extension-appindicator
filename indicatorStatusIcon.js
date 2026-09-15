@@ -26,12 +26,14 @@ const AppDisplay = imports.ui.appDisplay;
 const Main = imports.ui.main;
 const Panel = imports.ui.panel;
 const PanelMenu = imports.ui.panelMenu;
+const PopupMenu = imports.ui.popupMenu;
 
 const ExtensionUtils = imports.misc.extensionUtils;
 const Extension = ExtensionUtils.getCurrentExtension();
 
 const AppIndicator = Extension.imports.appIndicator;
 const DBusMenu = Extension.imports.dbusMenu;
+const OverflowManager = Extension.imports.overflowManager;
 const Util = Extension.imports.util;
 const PromiseUtils = Extension.imports.promiseUtils;
 const SettingsManager = Extension.imports.settingsManager;
@@ -54,6 +56,12 @@ function addIconToPanel(statusIcon) {
     Main.panel.addToStatusArea(indicatorId, statusIcon, 1,
         settings.get_string('tray-pos'));
 
+    if (statusIcon instanceof IndicatorStatusIcon) {
+        const manager = OverflowManager.OverflowManager.getDefault();
+        if (manager)
+            manager.registerIcon(statusIcon);
+    }
+
     Util.connectSmart(settings, 'changed::tray-pos', statusIcon, () =>
         addIconToPanel(statusIcon));
 }
@@ -72,6 +80,9 @@ var BaseStatusIcon = GObject.registerClass(
 class AppIndicatorsIndicatorBaseStatusIcon extends PanelMenu.Button {
     _init(menuAlignment, nameText, iconActor, dontCreateMenu) {
         super._init(menuAlignment, nameText, dontCreateMenu);
+
+        // Must be defined before the first _showIfReady() call below
+        this._isOverflowed = false;
 
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
@@ -128,8 +139,21 @@ class AppIndicatorsIndicatorBaseStatusIcon extends PanelMenu.Button {
         throw new GObject.NotImplementedError('uniqueId in %s'.format(this.constructor.name));
     }
 
+    setOverflowed(overflowed) {
+        overflowed = !!overflowed;
+        if (this._isOverflowed === overflowed)
+            return;
+
+        this._isOverflowed = overflowed;
+
+        if (overflowed)
+            this.visible = false;
+        else
+            this._showIfReady();
+    }
+
     _showIfReady() {
-        this.visible = this.isReady();
+        this.visible = !this._isOverflowed && this.isReady();
     }
 
     _onHoverChanged() {
@@ -233,6 +257,11 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
             new AppIndicator.IconActor(indicator, Panel.PANEL_ICON_SIZE));
         this._indicator = indicator;
 
+        // Last visibility derived from the SNI status only (overflow ignored),
+        // so checkAlive() is triggered by status changes and not by overflow.
+        // It starts from the actor visibility, as the v53 logic compared to it.
+        this._statusVisible = this.visible;
+
         this._lastClickTime = -1;
         this._lastClickX = -1;
         this._lastClickY = -1;
@@ -253,10 +282,17 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
 
         this.connect('notify::visible', () => this._updateMenu());
 
+        this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._ensureManagementMenuItems();
+        });
+
         this._showIfReady();
     }
 
     _onDestroy() {
+        this._destroyManagementMenuItems();
+
         if (this._menuClient) {
             this._menuClient.disconnect(this._menuReadyId);
             this._menuClient.destroy();
@@ -299,10 +335,14 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
     }
 
     _updateStatus() {
-        const wasVisible = this.visible;
-        this.visible = this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
+        const wasStatusVisible = this._statusVisible;
+        this._statusVisible =
+            this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
 
-        if (this.visible !== wasVisible)
+        // An overflowed icon must never reappear on the panel
+        this.visible = !this._isOverflowed && this._statusVisible;
+
+        if (this._statusVisible !== wasStatusVisible)
             this._indicator.checkAlive().catch(logError);
     }
 
@@ -337,6 +377,67 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
         this._updateLabel();
         this._updateStatus();
         this._updateMenu();
+    }
+
+    /**
+     * Ensure that the "Hide from Panel" / "Show on Panel" entry exists
+     * at the bottom of the indicator's context menu while pin mode is
+     * enabled. Called every time the menu opens because the DBusMenu
+     * client may rebuild menu items asynchronously.
+     */
+    _ensureManagementMenuItems() {
+        // Always drop previous entries first, so they are never duplicated
+        // and never left behind when pin mode gets disabled.
+        this._destroyManagementMenuItems();
+
+        const manager = OverflowManager.OverflowManager.getDefault();
+        const appId = this._indicator ? this._indicator.appId : null;
+        if (!manager || !appId)
+            return;
+
+        const settings = SettingsManager.getDefaultGSettings();
+        if (!settings.get_boolean('pin-mode-enabled'))
+            return;
+
+        const isHidden = manager.isHidden(appId);
+
+        // DBusMenu.Client.attachToMenu() and _updateMenu() call removeAll(),
+        // which destroys these items: drop the references when that happens.
+        const separator = new PopupMenu.PopupSeparatorMenuItem();
+        separator.connect('destroy', () => {
+            if (this._mgmtSeparator === separator)
+                this._mgmtSeparator = null;
+        });
+
+        const item = new PopupMenu.PopupMenuItem(
+            isHidden ? 'Show on Panel' : 'Hide from Panel');
+        item.connect('destroy', () => {
+            if (this._hideMenuItem === item)
+                this._hideMenuItem = null;
+        });
+        item.connect('activate', () => {
+            if (isHidden)
+                manager.unhideIcon(appId);
+            else
+                manager.hideIcon(appId);
+        });
+
+        this._mgmtSeparator = separator;
+        this._hideMenuItem = item;
+        this.menu.addMenuItem(separator);
+        this.menu.addMenuItem(item);
+    }
+
+    _destroyManagementMenuItems() {
+        if (this._mgmtSeparator) {
+            this._mgmtSeparator.destroy();
+            this._mgmtSeparator = null;
+        }
+
+        if (this._hideMenuItem) {
+            this._hideMenuItem.destroy();
+            this._hideMenuItem = null;
+        }
     }
 
     _updateClickCount(buttonEvent) {

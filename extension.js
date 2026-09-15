@@ -19,6 +19,7 @@
 const Extension = imports.misc.extensionUtils.getCurrentExtension();
 
 const StatusNotifierWatcher = Extension.imports.statusNotifierWatcher;
+const OverflowManager = Extension.imports.overflowManager;
 const TrayIconsManager = Extension.imports.trayIconsManager;
 const Util = Extension.imports.util;
 
@@ -57,6 +58,7 @@ function maybeEnableAfterNameAvailable() {
 function enable() {
     isEnabled = true;
     Util.tryCleanupOldIndicators();
+    OverflowManager.OverflowManager.initialize();
     maybeEnableAfterNameAvailable();
     TrayIconsManager.TrayIconsManager.initialize();
 }
@@ -68,4 +70,7 @@ function disable() {
         statusNotifierWatcher.destroy();
         statusNotifierWatcher = null;
     }
+    // Destroy icons first: restoring overflowed icons right before their
+    // destruction maps them and makes IconActor access disposed objects
+    OverflowManager.OverflowManager.destroy();
 }
