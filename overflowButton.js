@@ -36,6 +36,23 @@ const SettingsManager = Extension.imports.settingsManager;
 const Util = Extension.imports.util;
 const WindowManager = Extension.imports.windowManager;
 
+// Extra hit area around the expander arrow, in pixels
+const EXPANDER_PADDING = 8;
+
+// Whether an event happened on the expander arrow of a submenu item
+function _isOnExpander(subMenu, event) {
+    const arrow = subMenu._triangleBin;
+    if (!arrow)
+        return false;
+
+    const [x] = event.get_coords();
+    const [arrowX] = arrow.get_transformed_position();
+    const [arrowWidth] = arrow.get_transformed_size();
+
+    return x >= arrowX - EXPANDER_PADDING &&
+        x <= arrowX + arrowWidth + EXPANDER_PADDING;
+}
+
 var OverflowButton = GObject.registerClass(
 class AppIndicatorsOverflowButton extends PanelMenu.Button {
     _init() {
@@ -94,7 +111,8 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
                 indicator.appId || 'Unknown';
 
             // Use PopupSubMenuMenuItem: left click = activate window,
-            // right click / keyboard = show app menu + "Show on Panel"
+            // click on the arrow, right click or keyboard = show app menu
+            // + "Show on Panel"
             const subMenu = new PopupMenu.PopupSubMenuMenuItem(label, false);
 
             // Same icon as on the panel: a live icon actor of the indicator,
@@ -109,6 +127,10 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
             // vfunc_button_release_event, which EVENT_STOP here skips.
             subMenu.connect('button-release-event', (actor, event) => {
                 if (event.get_button() !== Clutter.BUTTON_PRIMARY)
+                    return Clutter.EVENT_PROPAGATE;
+
+                // Let the expander arrow open the app menu, as in the panel
+                if (_isOnExpander(subMenu, event))
                     return Clutter.EVENT_PROPAGATE;
 
                 // Normally cleared by the skipped class handler

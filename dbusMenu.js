@@ -893,7 +893,8 @@ var Client = class AppIndicatorsClient {
         this._itemsBeingAdded.add(child);
 
         idlePromise.then(() => {
-            if (!this._itemsBeingAdded.has(child))
+            // The client may have been destroyed while the item was pending
+            if (!this._itemsBeingAdded?.has(child))
                 return;
 
             this._rootMenu.addMenuItem(
@@ -901,7 +902,7 @@ var Client = class AppIndicatorsClient {
         }).catch(e => {
             if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 logError(e);
-        }).finally(() => this._itemsBeingAdded.delete(child));
+        }).finally(() => this._itemsBeingAdded?.delete(child));
     }
 
     _onRootChildRemoved(dbusItem, child) {
