@@ -128,7 +128,18 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
             this._addManagementItems(subMenu, indicator);
 
             this.menu.addMenuItem(subMenu);
-            this._attachIndicatorMenu(dbusMenuSection, indicator);
+
+            // Attach the DBus menu on first use: asking every app for its menu
+            // on each rebuild is needless traffic, and some of them log errors
+            // for an AboutToShow of a menu that is not shown
+            const openId = subMenu.menu.connect('open-state-changed',
+                (_menu, isOpen) => {
+                    if (!isOpen)
+                        return;
+
+                    subMenu.menu.disconnect(openId);
+                    this._attachIndicatorMenu(dbusMenuSection, indicator);
+                });
         }
 
         this.visible = overflowedIcons.length > 0;
