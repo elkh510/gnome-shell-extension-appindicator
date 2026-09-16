@@ -36,21 +36,14 @@ const SettingsManager = Extension.imports.settingsManager;
 const Util = Extension.imports.util;
 const WindowManager = Extension.imports.windowManager;
 
-// Extra hit area around the expander arrow, in pixels
-const EXPANDER_PADDING = 8;
-
-// Whether an event happened on the expander arrow of a submenu item
+// Whether an event happened on the expander of a submenu item. The expander
+// is reactive, so it is the source of its own events, no geometry needed
 function _isOnExpander(subMenu, event) {
-    const arrow = subMenu._triangleBin;
-    if (!arrow)
-        return false;
+    const expander = subMenu._triangleBin;
+    const source = event.get_source();
 
-    const [x] = event.get_coords();
-    const [arrowX] = arrow.get_transformed_position();
-    const [arrowWidth] = arrow.get_transformed_size();
-
-    return x >= arrowX - EXPANDER_PADDING &&
-        x <= arrowX + arrowWidth + EXPANDER_PADDING;
+    return !!expander && !!source &&
+        (source === expander || expander.contains(source));
 }
 
 var OverflowButton = GObject.registerClass(
@@ -126,6 +119,15 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
                 Panel.PANEL_ICON_SIZE);
             iconActor.reactive = false;
             subMenu.insert_child_at_index(iconActor, 0);
+
+            // Make the expander look and feel like its own button
+            const expander = subMenu._triangleBin;
+            if (expander) {
+                expander.add_style_class_name('appindicator-overflow-expander');
+                expander.y_align = Clutter.ActorAlign.FILL;
+                expander.reactive = true;
+                expander.track_hover = true;
+            }
 
             // Left click on the row = activate/toggle window + close overflow.
             // Handled on release: PopupSubMenuMenuItem toggles its submenu in
