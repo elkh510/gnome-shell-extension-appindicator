@@ -71,11 +71,16 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
 
         const box = new St.BoxLayout({ style_class: 'panel-status-indicators-box' });
         const icon = new St.Icon({
-            icon_name: 'pan-down-symbolic',
+            icon_name: 'pan-up-symbolic',
             style_class: 'system-status-icon',
         });
         box.add_child(icon);
         this.add_child(box);
+
+        // The arrow points up while the icons are collapsed, down while shown
+        this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            icon.icon_name = isOpen ? 'pan-down-symbolic' : 'pan-up-symbolic';
+        });
 
         const settings = SettingsManager.getDefaultGSettings();
         const updateStyle = () =>
