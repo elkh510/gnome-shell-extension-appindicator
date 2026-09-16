@@ -60,7 +60,6 @@ var OverflowManager = class AppIndicatorsOverflowManager {
         this._trackedIcons = new Map();
         this._overflowButton = null;
         this._updateTimeoutId = 0;
-        this._delayedUpdateId = 0;
         this._destroyed = false;
 
         const settings = SettingsManager.getDefaultGSettings();
@@ -91,9 +90,12 @@ var OverflowManager = class AppIndicatorsOverflowManager {
             Util.connectSmart(statusIcon._indicator, 'ready', this, () => {
                 this._recordKnownIndicator(statusIcon);
                 this._scheduleUpdate();
-                // Re-check after commandLine loads (needed for
-                // Electron apps sharing chrome_status_icon_1 ID)
-                this._scheduleDelayedUpdate();
+            });
+            // The appId of apps with an unstable SNI id (Electron, Go systray)
+            // is only known once the command line has been read
+            Util.connectSmart(statusIcon._indicator, 'command-line', this, () => {
+                this._recordKnownIndicator(statusIcon);
+                this._scheduleUpdate();
             });
             Util.connectSmart(statusIcon._indicator, 'status', this, () =>
                 this._scheduleUpdate());
@@ -155,21 +157,6 @@ var OverflowManager = class AppIndicatorsOverflowManager {
 
         this._updateTimeoutId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             this._updateTimeoutId = 0;
-            this._updateVisibility();
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    _scheduleDelayedUpdate() {
-        if (this._destroyed || this._delayedUpdateId)
-            return;
-
-        // Re-check after 3s - gives time for _commandLine to load
-        this._delayedUpdateId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
-            this._delayedUpdateId = 0;
-            // Re-record known indicators with resolved appIds
-            for (const icon of this._trackedIcons.values())
-                this._recordKnownIndicator(icon);
             this._updateVisibility();
             return GLib.SOURCE_REMOVE;
         });
@@ -322,11 +309,6 @@ var OverflowManager = class AppIndicatorsOverflowManager {
         if (this._updateTimeoutId) {
             GLib.source_remove(this._updateTimeoutId);
             this._updateTimeoutId = 0;
-        }
-
-        if (this._delayedUpdateId) {
-            GLib.source_remove(this._delayedUpdateId);
-            this._delayedUpdateId = 0;
         }
 
         if (this._overflowButton) {

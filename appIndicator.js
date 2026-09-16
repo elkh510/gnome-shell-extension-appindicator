@@ -453,6 +453,11 @@ var AppIndicator = class AppIndicatorsAppIndicator {
         try {
             this._commandLine = await Util.getProcessName(this.busName,
                 cancellable, GLib.PRIORITY_LOW);
+
+            // The command line arrives after 'ready', and appId depends on it
+            // for apps with an unstable SNI id
+            if (this._commandLine)
+                this.emit('command-line');
         } catch (e) {
             Util.Logger.debug(`${this.uniqueId}, failed getting command line: ${e.message}`);
         }
