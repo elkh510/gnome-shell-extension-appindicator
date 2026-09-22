@@ -108,9 +108,9 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
             const label = desktopApp?.get_name() || indicator.title ||
                 indicator.appId || 'Unknown';
 
-            // Use PopupSubMenuMenuItem: left click = activate window,
-            // click on the arrow, right click or keyboard = show app menu
-            // + "Show on Panel"
+            // Use PopupSubMenuMenuItem: left click = activate window (or
+            // the app menu when the app has no window), click on the arrow,
+            // right click or keyboard = show app menu + "Show on Panel"
             const subMenu = new PopupMenu.PopupSubMenuMenuItem(label, false);
 
             // Same icon as on the panel: a live icon actor of the indicator,
@@ -140,11 +140,18 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
                 if (_isOnExpander(subMenu, event))
                     return Clutter.EVENT_PROPAGATE;
 
+                if (!WindowManager.toggleWindows(indicator, event.get_time())) {
+                    // A tray only app has no window to raise, so the click
+                    // stays a plain click: let the class handler open the
+                    // app menu, which is all such an app has to offer
+                    if (indicator.menuPath)
+                        return Clutter.EVENT_PROPAGATE;
+
+                    indicator.open(...event.get_coords(), event.get_time());
+                }
+
                 // Normally cleared by the skipped class handler
                 actor.remove_style_pseudo_class('active');
-
-                if (!WindowManager.toggleWindows(indicator, event.get_time()))
-                    indicator.open(...event.get_coords(), event.get_time());
                 this.menu.close();
                 return Clutter.EVENT_STOP;
             });

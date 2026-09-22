@@ -83,6 +83,14 @@ const SNIconType = Object.freeze({
     },
 });
 
+// Whether an SNI id identifies the app it belongs to. Electron apps all
+// register as `chrome_status_icon_<n>` and Go systray apps as `systray_<pid>`,
+// so for them the id says nothing about the app
+function isUnstableId(id) {
+    return !!id &&
+        (id.startsWith('chrome_status_icon') || /^systray_\d+$/.test(id));
+}
+
 var AppIndicatorProxy = GObject.registerClass(
 class AppIndicatorProxy extends Util.DBusProxy {
     static get interfaceInfo() {
@@ -419,6 +427,7 @@ var AppIndicator = class AppIndicatorsAppIndicator {
 
     constructor(service, busName, object) {
         this.isReady = false;
+        this._commandLineResolved = false;
         this.busName = busName;
         this._uniqueId = Util.indicatorId(service, busName, object);
 
@@ -453,14 +462,18 @@ var AppIndicator = class AppIndicatorsAppIndicator {
         try {
             this._commandLine = await Util.getProcessName(this.busName,
                 cancellable, GLib.PRIORITY_LOW);
-
-            // The command line arrives after 'ready', and appId depends on it
-            // for apps with an unstable SNI id
-            if (this._commandLine)
-                this.emit('command-line');
         } catch (e) {
             Util.Logger.debug(`${this.uniqueId}, failed getting command line: ${e.message}`);
         }
+
+        if (cancellable.is_cancelled())
+            return;
+
+        // The command line arrives after 'ready', and appId depends on it for
+        // apps with an unstable SNI id. Emitted even when it could not be
+        // read, so that nothing keeps waiting for an id that will not change
+        this._commandLineResolved = true;
+        this.emit('command-line');
     }
 
     _checkIfReady() {
@@ -561,15 +574,22 @@ var AppIndicator = class AppIndicatorsAppIndicator {
      */
     get appId() {
         const { id } = this;
-        const unstableId = id &&
-            (id.startsWith('chrome_status_icon') || /^systray_\d+$/.test(id));
-        if (this._commandLine && unstableId) {
+        if (this._commandLine && isUnstableId(id)) {
             const exe = this._commandLine.trim().split(/\s+/)[0];
             const basename = exe.split('/').pop();
             if (basename)
                 return basename.toLowerCase();
         }
         return id;
+    }
+
+    /**
+     * Whether appId may still change: an app with an unstable SNI id only
+     * gets its real identifier once the command line has been read. Showing
+     * such an icon before that makes a hidden one flash on the panel.
+     */
+    get appIdPending() {
+        return !this._commandLineResolved && isUnstableId(this.id);
     }
 
     get status() {
