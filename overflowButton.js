@@ -97,6 +97,11 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
     }
 
     _opensDownwards() {
+        // Asking for the geometry of a button that is not on the stage yet
+        // answers nothing useful and makes St complain about the theme node
+        if (!this.get_stage())
+            return true;
+
         const [, y] = this.get_transformed_position();
         const monitor = Main.layoutManager.findMonitorForActor(this);
         if (!monitor || !Number.isFinite(y))
