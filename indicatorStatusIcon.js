@@ -20,7 +20,9 @@
 
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
+const GLib = imports.gi.GLib;
 const GObject = imports.gi.GObject;
+const Meta = imports.gi.Meta;
 const St = imports.gi.St;
 
 const AppDisplay = imports.ui.appDisplay;
@@ -636,6 +638,64 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
             this._updateIconSize());
 
         this._updateIconSize();
+        this._trackStagePosition();
+    }
+
+    // The X window of a legacy icon is only moved when the icon actor itself
+    // gets an allocation. When the panel box shifts as a whole (a neighbor
+    // appears, disappears or changes width) its children keep their place
+    // inside it, nothing is re-allocated, and the window stays behind: the
+    // icon is then drawn on top of its neighbor. Watch the actors above the
+    // icon and force an allocation whenever it ends up somewhere else.
+    _trackStagePosition() {
+        this._positionWatchIds = [];
+
+        const untrack = () => {
+            this._positionWatchIds.forEach(([actor, id]) => actor.disconnect(id));
+            this._positionWatchIds = [];
+        };
+
+        const reposition = () => {
+            const [x, y] = this.container.get_transformed_position();
+            if (!Number.isFinite(x) || !Number.isFinite(y) ||
+                (x === this._stageX && y === this._stageY))
+                return;
+
+            this._stageX = x;
+            this._stageY = y;
+
+            // Queueing the relayout here would do it while the stage is still
+            // allocating, so leave it to the end of the current frame
+            if (this._repositionLaterId)
+                return;
+
+            this._repositionLaterId = Meta.later_add(
+                Meta.LaterType.BEFORE_REDRAW, () => {
+                    delete this._repositionLaterId;
+                    if (this._icon)
+                        this._icon.queue_relayout();
+                    return GLib.SOURCE_REMOVE;
+                });
+        };
+
+        const track = () => {
+            untrack();
+            for (let actor = this.container; actor; actor = actor.get_parent()) {
+                this._positionWatchIds.push(
+                    [actor, actor.connect('notify::allocation', reposition)]);
+            }
+            reposition();
+        };
+
+        this.container.connect('parent-set', track);
+        this.connect('destroy', () => {
+            untrack();
+            if (this._repositionLaterId) {
+                Meta.later_remove(this._repositionLaterId);
+                delete this._repositionLaterId;
+            }
+        });
+        track();
     }
 
     _onDestroy() {
