@@ -36,6 +36,9 @@ const SettingsManager = Extension.imports.settingsManager;
 const Util = Extension.imports.util;
 const WindowManager = Extension.imports.windowManager;
 
+// Height of the divider that splits an entry from its expander, in logical px
+const DIVIDER_HEIGHT = 18;
+
 // Whether an event happened on the expander of a submenu item. The expander
 // is reactive, so it is the source of its own events, no geometry needed
 function _isOnExpander(subMenu, event) {
@@ -120,13 +123,28 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
             iconActor.reactive = false;
             subMenu.insert_child_at_index(iconActor, 0);
 
-            // Make the expander look and feel like its own button
+            // Split button look: the expander is a target of its own, set
+            // off by a divider line, with the arrow centered on it
             const expander = subMenu._triangleBin;
             if (expander) {
+                const { scale_factor: scaleFactor } =
+                    St.ThemeContext.get_for_stage(global.stage);
+
+                subMenu.insert_child_below(new St.Widget({
+                    style_class: 'appindicator-overflow-divider',
+                    y_align: Clutter.ActorAlign.CENTER,
+                    width: Math.max(1, Math.round(scaleFactor)),
+                    height: Math.round(DIVIDER_HEIGHT * scaleFactor),
+                }), expander);
+
                 expander.add_style_class_name('appindicator-overflow-expander');
                 expander.y_align = Clutter.ActorAlign.FILL;
                 expander.reactive = true;
                 expander.track_hover = true;
+
+                // Without a layout manager the arrow is placed at the origin
+                // of the actor, which leaves it off center inside the padding
+                expander.layout_manager = new Clutter.BinLayout();
             }
 
             // Left click on the row = activate/toggle window + close overflow.
