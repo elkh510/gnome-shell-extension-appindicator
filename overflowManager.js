@@ -86,48 +86,21 @@ var OverflowManager = class AppIndicatorsOverflowManager {
             this._scheduleUpdate();
         });
 
+        const refresh = () => {
+            this._recordKnownIndicator(statusIcon);
+            this._scheduleUpdate();
+        };
+
         if (statusIcon._indicator) {
-            Util.connectSmart(statusIcon._indicator, 'ready', this, () => {
-                this._recordKnownIndicator(statusIcon);
-                this._applyIconVisibility(statusIcon);
-                this._scheduleUpdate();
-            });
             // The appId of apps with an unstable SNI id (Electron, Go systray)
             // is only known once the command line has been read
-            Util.connectSmart(statusIcon._indicator, 'command-line', this, () => {
-                this._recordKnownIndicator(statusIcon);
-                this._applyIconVisibility(statusIcon);
-                this._scheduleUpdate();
-            });
-            Util.connectSmart(statusIcon._indicator, 'status', this, () => {
-                this._applyIconVisibility(statusIcon);
-                this._scheduleUpdate();
-            });
+            ['ready', 'command-line'].forEach(signal =>
+                Util.connectSmart(statusIcon._indicator, signal, this, refresh));
+            Util.connectSmart(statusIcon._indicator, 'status', this, () =>
+                this._scheduleUpdate());
         }
 
-        this._recordKnownIndicator(statusIcon);
-        this._applyIconVisibility(statusIcon);
-        this._scheduleUpdate();
-    }
-
-    // Hides an icon that must stay off the panel right away, without waiting
-    // for the idle pass: every delay between mapping the icon and the pass
-    // shows it for a moment, which is what happens to the whole tray when the
-    // shell enables the extension again after the lock screen. Showing icons
-    // is left to _updateVisibility(), so nothing can stay hidden by mistake.
-    _applyIconVisibility(statusIcon) {
-        const settings = SettingsManager.getDefaultGSettings();
-        const indicator = statusIcon._indicator;
-        if (this._destroyed || !indicator ||
-            !settings.get_boolean('pin-mode-enabled'))
-            return;
-
-        const hiddenIds = settings.get_strv('hidden-icons');
-        if (!hiddenIds.length)
-            return;
-
-        if (indicator.appIdPending || hiddenIds.includes(indicator.appId))
-            statusIcon.setOverflowed(true);
+        refresh();
     }
 
     hideIcon(indicatorId) {
@@ -207,49 +180,35 @@ var OverflowManager = class AppIndicatorsOverflowManager {
         // Hide mode: all visible by default, hidden go to overflow
         const hiddenIds = settings.get_strv('hidden-icons');
         const { SNIStatus } = AppIndicator;
-
-        // Active icons: ready and not PASSIVE
-        const activeIcons = allIcons.filter(icon =>
-            icon._indicator &&
-            icon._indicator.isReady &&
-            icon._indicator.status !== SNIStatus.PASSIVE);
-
-        // An icon whose appId is not resolved yet stays off the panel: it
-        // may well be a hidden one, and showing it until the id arrives makes
-        // it flash. It is kept out of the overflow menu too, as its entry
-        // would carry the name and icon of an unidentified app.
-        const pendingIcons = hiddenIds.length
-            ? activeIcons.filter(icon => icon._indicator.appIdPending) : [];
-        const resolvedIcons = activeIcons.filter(icon =>
-            !pendingIcons.includes(icon));
-
-        for (const icon of pendingIcons)
-            icon.setOverflowed(true);
-
-        const visibleIcons = resolvedIcons.filter(icon =>
-            !icon._indicator.appId ||
-            !hiddenIds.includes(icon._indicator.appId));
-
-        const hiddenIcons = resolvedIcons.filter(icon =>
-            icon._indicator.appId &&
-            hiddenIds.includes(icon._indicator.appId));
-
-        // Visible icons - shown on panel
-        for (const icon of visibleIcons)
-            icon.setOverflowed(false);
-
-        // Hidden icons - go to overflow
         const overflowedIcons = [];
-        for (const icon of hiddenIcons) {
-            icon.setOverflowed(true);
-            overflowedIcons.push(icon);
-        }
 
-        // Inactive icons - not overflowed (own logic hides them)
-        const inactiveIcons = allIcons.filter(icon =>
-            !activeIcons.includes(icon));
-        for (const icon of inactiveIcons)
-            icon.setOverflowed(false);
+        for (const icon of allIcons) {
+            const indicator = icon._indicator;
+
+            if (!indicator) {
+                icon.setOverflowed(false);
+                continue;
+            }
+
+            // An icon whose appId is not final yet stays off the panel: it
+            // may well be a hidden one, and showing it until the id arrives
+            // makes it flash. It is kept out of the overflow menu too, as its
+            // entry would carry the name and icon of an unidentified app.
+            if (indicator.appIdPending) {
+                icon.setOverflowed(true);
+                continue;
+            }
+
+            // The decision does not depend on the SNI status, so an icon the
+            // app turns active again does not appear on the panel first
+            const hidden = hiddenIds.includes(indicator.appId);
+            icon.setOverflowed(hidden);
+
+            // Only the icons the app currently shows belong in the menu
+            if (hidden && indicator.isReady &&
+                indicator.status !== SNIStatus.PASSIVE)
+                overflowedIcons.push(icon);
+        }
 
         this._updateOverflowButton(overflowedIcons);
     }

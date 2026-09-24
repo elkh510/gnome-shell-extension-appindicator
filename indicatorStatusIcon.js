@@ -20,7 +20,6 @@
 
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
-const GLib = imports.gi.GLib;
 const GObject = imports.gi.GObject;
 const Meta = imports.gi.Meta;
 const St = imports.gi.St;
@@ -283,10 +282,18 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
             new AppIndicator.IconActor(indicator, Panel.PANEL_ICON_SIZE));
         this._indicator = indicator;
 
+        // The icon waits off the panel until the manager has classified it:
+        // showing it first and hiding it once the appId is known makes the
+        // hidden ones flash, most visibly when the shell enables the
+        // extension again after the lock screen
+        this._isOverflowed = !!OverflowManager.OverflowManager.getDefault() &&
+            SettingsManager.getDefaultGSettings().get_boolean('pin-mode-enabled');
+
         // Last visibility derived from the SNI status only (overflow ignored),
         // so checkAlive() is triggered by status changes and not by overflow.
-        // It starts from the actor visibility, as the v53 logic compared to it.
-        this._statusVisible = this.visible;
+        // An item counts as Active until it says otherwise, which is what the
+        // v53 logic assumed by comparing to the visibility of a fresh actor.
+        this._statusVisible = true;
 
         this._lastClickTime = -1;
         this._lastClickX = -1;
@@ -397,8 +404,13 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
     }
 
     _showIfReady() {
-        if (!this.isReady())
+        // The override runs from the base constructor too, before there is an
+        // indicator, and an actor is visible by default: an icon that is not
+        // ready yet has to be hidden here, or it shows up empty
+        if (!this.isReady()) {
+            this.visible = false;
             return;
+        }
 
         this._updateLabel();
         this._updateStatus();
@@ -638,64 +650,60 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
             this._updateIconSize());
 
         this._updateIconSize();
-        this._trackStagePosition();
+
+        Util.connectSmart(this.container, 'parent-set', this, () =>
+            this._watchPanelBox());
+        this._watchPanelBox();
     }
 
     // The X window of a legacy icon is only moved when the icon actor itself
-    // gets an allocation. When the panel box shifts as a whole (a neighbor
-    // appears, disappears or changes width) its children keep their place
-    // inside it, nothing is re-allocated, and the window stays behind: the
-    // icon is then drawn on top of its neighbor. Watch the actors above the
-    // icon and force an allocation whenever it ends up somewhere else.
-    _trackStagePosition() {
-        this._positionWatchIds = [];
+    // gets an allocation. When the box that holds it changes size (a neighbor
+    // appears, disappears or gets wider) its children keep their place inside
+    // it, nothing is re-allocated and the window stays behind, drawn on top
+    // of the neighboring icon. Watch the box and move the icon along with it.
+    _watchPanelBox() {
+        if (this._panelBox) {
+            Util.disconnectSmart(this._panelBox, this, this._panelBoxSignalIds);
+            delete this._panelBox;
+            delete this._panelBoxSignalIds;
+        }
 
-        const untrack = () => {
-            this._positionWatchIds.forEach(([actor, id]) => actor.disconnect(id));
-            this._positionWatchIds = [];
-        };
+        const parent = this.container.get_parent();
+        if (!parent)
+            return;
 
-        const reposition = () => {
-            const [x, y] = this.container.get_transformed_position();
-            if (!Number.isFinite(x) || !Number.isFinite(y) ||
-                (x === this._stageX && y === this._stageY))
-                return;
+        this._panelBox = parent;
+        this._panelBoxSignalIds = Util.connectSmart(parent,
+            'notify::allocation', this, () =>
+                this._repositionIcon().catch(logError));
+    }
 
-            this._stageX = x;
-            this._stageY = y;
+    async _repositionIcon() {
+        // The box is still being allocated, so both the new position and the
+        // relayout have to wait for the end of the current frame
+        if (this._repositionLater)
+            return;
 
-            // Queueing the relayout here would do it while the stage is still
-            // allocating, so leave it to the end of the current frame
-            if (this._repositionLaterId)
-                return;
+        this._repositionLater = new PromiseUtils.MetaLaterPromise(
+            Meta.LaterType.BEFORE_REDRAW);
 
-            this._repositionLaterId = Meta.later_add(
-                Meta.LaterType.BEFORE_REDRAW, () => {
-                    delete this._repositionLaterId;
-                    if (this._icon)
-                        this._icon.queue_relayout();
-                    return GLib.SOURCE_REMOVE;
-                });
-        };
+        try {
+            await this._repositionLater;
+        } catch (e) {
+            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                throw e;
+            return;
+        } finally {
+            delete this._repositionLater;
+        }
 
-        const track = () => {
-            untrack();
-            for (let actor = this.container; actor; actor = actor.get_parent()) {
-                this._positionWatchIds.push(
-                    [actor, actor.connect('notify::allocation', reposition)]);
-            }
-            reposition();
-        };
+        const [x, y] = this.container.get_transformed_position();
+        if (!Number.isFinite(x) || (x === this._stageX && y === this._stageY))
+            return;
 
-        this.container.connect('parent-set', track);
-        this.connect('destroy', () => {
-            untrack();
-            if (this._repositionLaterId) {
-                Meta.later_remove(this._repositionLaterId);
-                delete this._repositionLaterId;
-            }
-        });
-        track();
+        this._stageX = x;
+        this._stageY = y;
+        this._icon?.queue_relayout();
     }
 
     _onDestroy() {
@@ -703,6 +711,9 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
 
         if (this._waitDoubleClickPromise)
             this._waitDoubleClickPromise.cancel();
+
+        if (this._repositionLater)
+            this._repositionLater.cancel();
 
         super._onDestroy();
     }
@@ -734,7 +745,7 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
 
     vfunc_touch_event(touchEvent) {
         // Under X11 we rely on emulated pointer events
-        if (!imports.gi.Meta.is_wayland_compositor())
+        if (!Meta.is_wayland_compositor())
             return Clutter.EVENT_PROPAGATE;
 
         const slot = touchEvent.sequence.get_slot();

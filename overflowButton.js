@@ -140,15 +140,12 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
                 if (_isOnExpander(subMenu, event))
                     return Clutter.EVENT_PROPAGATE;
 
-                if (!WindowManager.toggleWindows(indicator, event.get_time())) {
-                    // A tray only app has no window to raise, so the click
-                    // stays a plain click: let the class handler open the
-                    // app menu, which is all such an app has to offer
-                    if (indicator.menuPath)
-                        return Clutter.EVENT_PROPAGATE;
-
-                    indicator.open(...event.get_coords(), event.get_time());
-                }
+                // A tray only app has no window to raise, so the click stays
+                // a plain click: let the class handler open the app menu,
+                // which is all such an app has to offer (an overflowed icon
+                // always has one, isReady() requires a menu path)
+                if (!WindowManager.toggleWindows(indicator, event.get_time()))
+                    return Clutter.EVENT_PROPAGATE;
 
                 // Normally cleared by the skipped class handler
                 actor.remove_style_pseudo_class('active');
