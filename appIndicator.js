@@ -416,6 +416,14 @@ class AppIndicatorProxy extends DBusProxy {
  * the AppIndicator class serves as a generic container for indicator information and functions common
  * for every displaying implementation (IndicatorMessageSource and IndicatorStatusIcon)
  */
+// Whether an SNI id identifies the app it belongs to. Electron apps all
+// register as `chrome_status_icon_<n>` and Go systray apps as `systray_<pid>`,
+// so for them the id says nothing about the app
+function isUnstableId(id) {
+    return !!id &&
+        (id.startsWith('chrome_status_icon') || /^systray_\d+$/.test(id));
+}
+
 export class AppIndicator extends Signals.EventEmitter {
     static get NEEDED_PROPERTIES() {
         return ['Id', 'Menu'];
@@ -503,6 +511,7 @@ export class AppIndicator extends Signals.EventEmitter {
             if (!this._appInfo) {
                 commandLine = await DBusUtils.getProcessNameForPid(pid,
                     cancellable, GLib.PRIORITY_LOW);
+                this._commandLine = commandLine;
             }
         } catch (e) {
             if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
@@ -519,6 +528,12 @@ export class AppIndicator extends Signals.EventEmitter {
                 commandLine ?? 'true', this.title ?? this.id,
                 Gio.AppInfoCreateFlags.SUPPORTS_STARTUP_NOTIFICATION);
         }
+
+        // The app behind an unstable SNI id is only known now, and appId
+        // depends on it. Emitted in every case, also when nothing could be
+        // read, so that nothing keeps waiting for an id that will not change
+        this._appInfoResolved = true;
+        this.emit('app-info');
     }
 
     _checkIfReady() {
@@ -612,18 +627,33 @@ export class AppIndicator extends Signals.EventEmitter {
      * Electron apps register SNI items with the same generic id
      * `chrome_status_icon_1`, which makes Bitwarden, Telegram, Pritunl
      * and similar apps indistinguishable from each other when stored
-     * in GSettings. To work around that we derive the basename of the
-     * executable from `_commandLine` and use it as the identifier.
-     * Non-Electron apps continue to use their SNI id.
+     * in GSettings; Go systray apps use `systray_<pid>`, which changes on
+     * every start. For those the app the process belongs to is used
+     * instead, by desktop id or, failing that, by the name of the
+     * executable. Other apps continue to use their SNI id.
      */
     get appId() {
-        if (this._commandLine && this.id?.startsWith('chrome_status_icon')) {
-            const exe = this._commandLine.trim().split(/\s+/)[0];
-            const basename = exe.split('/').pop();
-            if (basename)
-                return basename.toLowerCase();
-        }
-        return this.id;
+        const {id} = this;
+        if (!isUnstableId(id))
+            return id;
+
+        const desktopId = this._appInfo?.get_id()?.replace(/\.desktop$/, '');
+        if (desktopId)
+            return desktopId.toLowerCase();
+
+        const exe = this._commandLine?.trim().split(/\s+/)[0];
+        const basename = exe?.split('/').pop();
+        return basename ? basename.toLowerCase() : id;
+    }
+
+    /**
+     * Whether appId may still change: an app with an unstable SNI id only
+     * gets its real identifier once the process behind it has been looked
+     * up. Showing such an icon before that makes a hidden one flash on the
+     * panel.
+     */
+    get appIdPending() {
+        return !this._appInfoResolved && isUnstableId(this.id);
     }
 
     get status() {

@@ -20,10 +20,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 
 import {SNIStatus} from './appIndicator.js';
-import * as StatusIcon from './indicatorStatusIcon.js';
 import {OverflowButton} from './overflowButton.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
+import * as WindowManager from './windowManager.js';
+
+const OVERFLOW_BUTTON_ROLE = 'appindicator-overflow';
 
 let overflowManager;
 
@@ -54,6 +56,7 @@ export class OverflowManager extends Signals.EventEmitter {
         this._trackedIcons = new Map();
         this._overflowButton = null;
         this._updateTimeoutId = 0;
+        this._destroyed = false;
 
         const settings = SettingsManager.getDefaultGSettings();
         this._settingsChangedIds = [
@@ -67,31 +70,33 @@ export class OverflowManager extends Signals.EventEmitter {
     }
 
     registerIcon(statusIcon) {
-        if (this._trackedIcons.has(statusIcon.uniqueId))
+        const {uniqueId} = statusIcon;
+        if (this._destroyed || this._trackedIcons.has(uniqueId))
             return;
 
-        this._trackedIcons.set(statusIcon.uniqueId, statusIcon);
+        this._trackedIcons.set(uniqueId, statusIcon);
 
-        statusIcon.connect('destroy', () => {
-            this._trackedIcons.delete(statusIcon.uniqueId);
+        // 4-arg form: the handler is dropped when the manager is destroyed
+        Util.connectSmart(statusIcon, 'destroy', this, () => {
+            this._trackedIcons.delete(uniqueId);
             this._scheduleUpdate();
         });
 
+        const refresh = () => {
+            this._recordKnownIndicator(statusIcon);
+            this._scheduleUpdate();
+        };
+
         if (statusIcon._indicator) {
-            Util.connectSmart(statusIcon._indicator, 'ready',
-                this, () => {
-                    this._recordKnownIndicator(statusIcon);
-                    this._scheduleUpdate();
-                    // Re-check after commandLine loads (needed for
-                    // Electron apps sharing chrome_status_icon_1 ID)
-                    this._scheduleDelayedUpdate();
-                });
+            // The appId of apps with an unstable SNI id (Electron, Go systray)
+            // is only known once the app behind the process is resolved
+            ['ready', 'app-info'].forEach(signal =>
+                Util.connectSmart(statusIcon._indicator, signal, this, refresh));
             Util.connectSmart(statusIcon._indicator, 'status',
                 this, () => this._scheduleUpdate());
         }
 
-        this._recordKnownIndicator(statusIcon);
-        this._scheduleUpdate();
+        refresh();
     }
 
     hideIcon(indicatorId) {
@@ -127,7 +132,8 @@ export class OverflowManager extends Signals.EventEmitter {
         const known = settings.get_value('known-indicators')
             .deep_unpack();
         const id = indicator.appId;
-        const title = indicator.title || indicator.id || id;
+        const title = WindowManager.findDesktopApp(indicator)?.get_name() ||
+            indicator.title || indicator.id || id;
 
         const idx = known.findIndex(pair => pair[0] === id);
         if (idx >= 0) {
@@ -143,7 +149,7 @@ export class OverflowManager extends Signals.EventEmitter {
     }
 
     _scheduleUpdate() {
-        if (this._updateTimeoutId)
+        if (this._destroyed || this._updateTimeoutId)
             return;
 
         this._updateTimeoutId = GLib.idle_add(
@@ -154,23 +160,10 @@ export class OverflowManager extends Signals.EventEmitter {
             });
     }
 
-    _scheduleDelayedUpdate() {
-        if (this._delayedUpdateId)
+    _updateVisibility() {
+        if (this._destroyed)
             return;
 
-        // Re-check after 3s — gives time for _commandLine to load
-        this._delayedUpdateId = GLib.timeout_add(
-            GLib.PRIORITY_DEFAULT, 3000, () => {
-                this._delayedUpdateId = 0;
-                // Re-record known indicators with resolved appIds
-                for (const icon of this._trackedIcons.values())
-                    this._recordKnownIndicator(icon);
-                this._updateVisibility();
-                return GLib.SOURCE_REMOVE;
-            });
-    }
-
-    _updateVisibility() {
         const settings = SettingsManager.getDefaultGSettings();
         const pinMode =
             settings.get_boolean('pin-mode-enabled');
@@ -187,41 +180,35 @@ export class OverflowManager extends Signals.EventEmitter {
 
         // Hide mode: all visible by default, hidden go to overflow
         const hiddenIds = settings.get_strv('hidden-icons');
-
-        // Active icons: ready and not PASSIVE
-        const activeIcons = allIcons.filter(icon =>
-            icon._indicator &&
-            icon._indicator.isReady &&
-            icon._indicator.status !== SNIStatus.PASSIVE
-        );
-
-        const visibleIcons = activeIcons.filter(icon =>
-            !icon._indicator.appId ||
-            !hiddenIds.includes(icon._indicator.appId)
-        );
-
-        const hiddenIcons = activeIcons.filter(icon =>
-            icon._indicator.appId &&
-            hiddenIds.includes(icon._indicator.appId)
-        );
-
-        // Visible icons — shown on panel
-        for (const icon of visibleIcons)
-            icon.setOverflowed(false);
-
-        // Hidden icons — go to overflow
         const overflowedIcons = [];
-        for (const icon of hiddenIcons) {
-            icon.setOverflowed(true);
-            overflowedIcons.push(icon);
-        }
 
-        // Inactive icons — not overflowed (own logic hides them)
-        const inactiveIcons = allIcons.filter(icon =>
-            !activeIcons.includes(icon)
-        );
-        for (const icon of inactiveIcons)
-            icon.setOverflowed(false);
+        for (const icon of allIcons) {
+            const indicator = icon._indicator;
+
+            if (!indicator) {
+                icon.setOverflowed(false);
+                continue;
+            }
+
+            // An icon whose appId is not final yet stays off the panel: it
+            // may well be a hidden one, and showing it until the id arrives
+            // makes it flash. It is kept out of the overflow menu too, as its
+            // entry would carry the name and icon of an unidentified app.
+            if (indicator.appIdPending) {
+                icon.setOverflowed(true);
+                continue;
+            }
+
+            // The decision does not depend on the SNI status, so an icon the
+            // app turns active again does not appear on the panel first
+            const hidden = hiddenIds.includes(indicator.appId);
+            icon.setOverflowed(hidden);
+
+            // Only the icons the app currently shows belong in the menu
+            if (hidden && indicator.isReady &&
+                indicator.status !== SNIStatus.PASSIVE)
+                overflowedIcons.push(icon);
+        }
 
         this._updateOverflowButton(overflowedIcons);
     }
@@ -229,10 +216,16 @@ export class OverflowManager extends Signals.EventEmitter {
     _updateOverflowButton(overflowedIcons) {
         if (overflowedIcons.length > 0) {
             if (!this._overflowButton) {
-                this._overflowButton = new OverflowButton();
+                const button = new OverflowButton();
+                button.connect('destroy', () => {
+                    if (this._overflowButton === button)
+                        this._overflowButton = null;
+                });
+                this._overflowButton = button;
                 this._addOverflowButtonToPanel();
             }
             this._overflowButton.updateMenu(overflowedIcons);
+            this._placeOverflowButton();
         } else if (this._overflowButton) {
             this._overflowButton.destroy();
             this._overflowButton = null;
@@ -244,46 +237,75 @@ export class OverflowManager extends Signals.EventEmitter {
             return;
 
         const settings = SettingsManager.getDefaultGSettings();
-        const indicatorId = 'appindicator-overflow';
 
-        const currentButton =
-            Main.panel.statusArea[indicatorId];
+        // Same re-add idiom as addIconToPanel(): addToStatusArea() throws
+        // if the role is still set, so clear it first
+        const currentButton = Main.panel.statusArea[OVERFLOW_BUTTON_ROLE];
         if (currentButton) {
             if (currentButton !== this._overflowButton)
                 currentButton.destroy();
-            Main.panel.statusArea[indicatorId] = null;
+            Main.panel.statusArea[OVERFLOW_BUTTON_ROLE] = null;
         }
 
-        Main.panel.addToStatusArea(indicatorId,
+        Main.panel.addToStatusArea(OVERFLOW_BUTTON_ROLE,
             this._overflowButton, -1,
             settings.get_string('tray-pos'));
+        this._placeOverflowButton();
+    }
 
-        this._overflowButton._appIndicatorOwned = true;
+    // Moves the button right after the last indicator icon of its panel box.
+    // Icons are always inserted at index 1, so once placed the button stays
+    // after them without further moves.
+    _placeOverflowButton() {
+        const container = this._overflowButton?.container;
+        const parent = container?.get_parent();
+        if (!parent)
+            return;
 
-        // Patch menuManager to skip hover-switching for overflow button
-        if (this._overflowButton.menu) {
-            StatusIcon.patchMenuManager();
-            this._overflowButton.menu.connect('open-state-changed',
-                (_m, isOpen) => { StatusIcon.setTrayMenuOpen(isOpen); });
+        const children = parent.get_children();
+        let lastIconIndex = -1;
+        for (const [role, indicator] of Object.entries(Main.panel.statusArea)) {
+            if (!indicator || role === OVERFLOW_BUTTON_ROLE ||
+                !role.startsWith('appindicator-'))
+                continue;
+
+            lastIconIndex = Math.max(lastIconIndex,
+                children.indexOf(indicator.container));
         }
+
+        if (lastIconIndex < 0)
+            return;
+
+        // set_child_at_index() removes the child before inserting it again
+        const currentIndex = children.indexOf(container);
+        const targetIndex = currentIndex < lastIconIndex
+            ? lastIconIndex : lastIconIndex + 1;
+        if (currentIndex !== targetIndex)
+            parent.set_child_at_index(container, targetIndex);
     }
 
     _onTrayPosChanged() {
-        if (this._overflowButton)
-            this._addOverflowButtonToPanel();
+        if (!this._overflowButton)
+            return;
+
+        this._addOverflowButtonToPanel();
+        // Icons move to the new box in their own tray-pos handlers, place the
+        // button again once all of them are done
+        this._scheduleUpdate();
     }
 
     destroy() {
+        if (this._destroyed)
+            return;
+
+        this._destroyed = true;
+
+        // Drops all the connectSmart() handlers targeting this manager
         this.emit('destroy');
 
         if (this._updateTimeoutId) {
             GLib.source_remove(this._updateTimeoutId);
             this._updateTimeoutId = 0;
-        }
-
-        if (this._delayedUpdateId) {
-            GLib.source_remove(this._delayedUpdateId);
-            this._delayedUpdateId = 0;
         }
 
         if (this._overflowButton) {

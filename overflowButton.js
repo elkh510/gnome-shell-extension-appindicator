@@ -18,15 +18,33 @@ import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Panel from 'resource:///org/gnome/shell/ui/panel.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import * as AppIndicator from './appIndicator.js';
 import * as DBusMenu from './dbusMenu.js';
+import * as IndicatorStatusIcon from './indicatorStatusIcon.js';
 import * as OverflowManagerModule from './overflowManager.js';
 import * as SettingsManager from './settingsManager.js';
+import * as Util from './util.js';
 import * as WindowManager from './windowManager.js';
 
-const FALLBACK_ICON_NAME = 'application-x-executable-symbolic';
+const PANEL_ICON_SIZE = Panel.PANEL_ICON_SIZE || 16;
+
+// Height of the divider that splits an entry from its expander, in logical px
+const DIVIDER_HEIGHT = 18;
+
+// Whether an event happened on the expander of a submenu item. The expander
+// is reactive, so it is the source of its own events, no geometry needed
+function _isOnExpander(subMenu, event) {
+    const expander = subMenu._triangleBin;
+    const source = event.get_source();
+
+    return !!expander && !!source &&
+        (source === expander || expander.contains(source));
+}
 
 export const OverflowButton = GObject.registerClass(
 class IndicatorOverflowButton extends PanelMenu.Button {
@@ -38,20 +56,37 @@ class IndicatorOverflowButton extends PanelMenu.Button {
         this._clickGesture?.set_enabled(false);
 
         this._menuClients = [];
+        this._openedEntryMenu = null;
 
-        this._menuClients = [];
+        // Submenus created by the DBus menu inside an entry report their
+        // open state to the top menu too (PopupSubMenu._getTopMenu() skips
+        // itself), and the default handler would collapse the entry holding
+        // them. Only track the direct entries of this menu, as
+        // DBusMenu.Client does for a regular indicator menu.
+        this.menu._setOpenedSubMenu = submenu =>
+            this._onEntryMenuOpened(submenu);
 
         const box = new St.BoxLayout({
             style_class: 'panel-status-indicators-box',
         });
-        const icon = new St.Icon({
-            icon_name: 'pan-down-symbolic',
+        this._arrowIcon = new St.Icon({
+            icon_name: 'pan-up-symbolic',
             style_class: 'system-status-icon',
         });
-        box.add_child(icon);
+        box.add_child(this._arrowIcon);
         this.add_child(box);
 
-        this._applyStyle();
+        this.menu.connect('open-state-changed', () => this._updateArrow());
+        // The panel the button sits in is only known once it is on the stage
+        this.connect('notify::mapped', () => this._updateArrow());
+        this._updateArrow();
+
+        const settings = SettingsManager.getDefaultGSettings();
+        const updateStyle = () =>
+            IndicatorStatusIcon.updateCompactModeStyle(this);
+        Util.connectSmart(settings, 'changed::compact-mode-enabled', this, updateStyle);
+        Util.connectSmart(settings, 'changed::icon-spacing', this, updateStyle);
+        updateStyle();
     }
 
     vfunc_event(event) {
@@ -60,109 +95,173 @@ class IndicatorOverflowButton extends PanelMenu.Button {
             this.menu?.toggle();
             return Clutter.EVENT_STOP;
         }
+
         return Clutter.EVENT_PROPAGATE;
     }
 
-    _applyStyle() {
-        const settings = SettingsManager.getDefaultGSettings();
-        if (settings.get_boolean('compact-mode-enabled'))
-            this.set_style('-natural-hpadding: 10px');
-        else
-            this.set_style(null);
+    // The arrow points the way the menu goes: down while the menu is closed
+    // on a panel at the top of the screen, up on a panel at the bottom, and
+    // the other way round while the menu is open
+    _updateArrow() {
+        const pointsDown = this._opensDownwards() !== this.menu.isOpen;
+        this._arrowIcon.icon_name = pointsDown
+            ? 'pan-down-symbolic' : 'pan-up-symbolic';
+    }
+
+    _opensDownwards() {
+        const [, y] = this.get_transformed_position();
+        const monitor = Main.layoutManager.findMonitorForActor(this);
+        if (!monitor || !Number.isFinite(y))
+            return true;
+
+        return y + this.height / 2 < monitor.y + monitor.height / 2;
+    }
+
+    _onEntryMenuOpened(submenu) {
+        if (!submenu || submenu._parent !== this.menu ||
+            submenu === this._openedEntryMenu)
+            return;
+
+        if (this._openedEntryMenu && this._openedEntryMenu.isOpen)
+            this._openedEntryMenu.close(true);
+
+        this._openedEntryMenu = submenu;
     }
 
     updateMenu(overflowedIcons) {
         this._destroyMenuClients();
         this.menu.removeAll();
+        this._openedEntryMenu = null;
 
         for (const statusIcon of overflowedIcons) {
             const indicator = statusIcon._indicator;
             if (!indicator)
                 continue;
 
-            const appId = indicator.appId;
-            const label = indicator.title || appId || 'Unknown';
+            const desktopApp = WindowManager.findDesktopApp(indicator);
+            const label = desktopApp?.get_name() || indicator.title ||
+                indicator.appId || 'Unknown';
 
-            // Use PopupSubMenuMenuItem: left click = activate window,
-            // right click / expand arrow = show app menu + "Show on Panel"
-            const subMenu =
-                new PopupMenu.PopupSubMenuMenuItem(label);
+            // Use PopupSubMenuMenuItem: left click = activate window (or
+            // the app menu when the app has no window), click on the arrow,
+            // right click or keyboard = show app menu + "Show on Panel"
+            const subMenu = new PopupMenu.PopupSubMenuMenuItem(label, false);
 
-            // Use gicon from the actual tray icon for proper rendering
-            const gicon = statusIcon._icon?.gicon;
-            const menuIcon = gicon
-                ? new St.Icon({gicon, style_class: 'popup-menu-icon'})
-                : new St.Icon({
-                    icon_name: FALLBACK_ICON_NAME,
-                    style_class: 'popup-menu-icon',
-                });
-            subMenu.insert_child_below(
-                menuIcon, subMenu.label);
+            // Same icon as on the panel: a live icon actor of the indicator,
+            // at the panel size, following icon changes
+            const iconActor = new AppIndicator.IconActor(indicator,
+                PANEL_ICON_SIZE);
+            iconActor.reactive = false;
+            subMenu.insert_child_at_index(iconActor, 0);
 
-            // Left click on the row = activate/toggle window + close overflow
-            subMenu.connect('button-press-event', (_actor, event) => {
-                if (event.get_button() === Clutter.BUTTON_PRIMARY) {
-                    if (!WindowManager.toggleWindows(indicator))
-                        indicator.open(
-                            ...event.get_coords(), event.get_time());
-                    this.menu.close();
-                    return Clutter.EVENT_STOP;
-                }
-                return Clutter.EVENT_PROPAGATE;
+            // Split button look: the expander is a target of its own, set
+            // off by a divider line, with the arrow centered on it
+            const expander = subMenu._triangleBin;
+            if (expander) {
+                const {scaleFactor} = St.ThemeContext.get_for_stage(global.stage);
+
+                subMenu.insert_child_below(new St.Widget({
+                    style_class: 'appindicator-overflow-divider',
+                    y_align: Clutter.ActorAlign.CENTER,
+                    width: Math.max(1, Math.round(scaleFactor)),
+                    height: Math.round(DIVIDER_HEIGHT * scaleFactor),
+                }), expander);
+
+                expander.add_style_class_name('appindicator-overflow-expander');
+                expander.y_align = Clutter.ActorAlign.FILL;
+                expander.reactive = true;
+                expander.track_hover = true;
+
+                // Without a layout manager the arrow is placed at the origin
+                // of the actor, which leaves it off center inside the padding
+                expander.layout_manager = new Clutter.BinLayout();
+            }
+
+            // Left click on the row = activate/toggle window + close overflow.
+            // Handled on release: PopupSubMenuMenuItem toggles its submenu in
+            // vfunc_button_release_event, which EVENT_STOP here skips.
+            subMenu.connect('button-release-event', (actor, event) => {
+                if (event.get_button() !== Clutter.BUTTON_PRIMARY)
+                    return Clutter.EVENT_PROPAGATE;
+
+                // Let the expander arrow open the app menu, as in the panel
+                if (_isOnExpander(subMenu, event))
+                    return Clutter.EVENT_PROPAGATE;
+
+                // A tray only app has no window to raise, so the click stays
+                // a plain click: let the class handler open the app menu,
+                // which is all such an app has to offer (an overflowed icon
+                // always has one, isReady() requires a menu path)
+                if (!WindowManager.toggleWindows(indicator, event.get_time()))
+                    return Clutter.EVENT_PROPAGATE;
+
+                // Normally cleared by the skipped class handler
+                actor.remove_style_pseudo_class('active');
+                this.menu.close();
+                return Clutter.EVENT_STOP;
             });
 
-            this._attachIndicatorMenu(
-                subMenu, indicator);
+            // The DBus menu gets its own section: the client adds items
+            // asynchronously (and removeAll()s its root menu on attach), so
+            // this keeps the management items always at the bottom.
+            const dbusMenuSection = new PopupMenu.PopupMenuSection();
+            subMenu.menu.addMenuItem(dbusMenuSection);
+            this._addManagementItems(subMenu, indicator);
 
             this.menu.addMenuItem(subMenu);
+
+            // Attach the DBus menu on first use: asking every app for its menu
+            // on each rebuild is needless traffic, and some of them log errors
+            // for an AboutToShow of a menu that is not shown
+            const openId = subMenu.menu.connect('open-state-changed',
+                (_menu, isOpen) => {
+                    if (!isOpen)
+                        return;
+
+                    subMenu.menu.disconnect(openId);
+                    this._attachIndicatorMenu(dbusMenuSection, indicator);
+                });
         }
 
         this.visible = overflowedIcons.length > 0;
+
+        // A panel that moves the button (dash-to-panel at the bottom of the
+        // screen) does so without allocating it again, so the side it sits on
+        // is checked whenever the menu is rebuilt
+        this._updateArrow();
     }
 
-    _attachIndicatorMenu(subMenu, indicator) {
-        if (!indicator.menuPath) {
-            // No DBus menu — just add management items
-            this._addManagementItems(subMenu, indicator);
+    _attachIndicatorMenu(section, indicator) {
+        if (!indicator.menuPath)
             return;
-        }
 
-        const client = new DBusMenu.Client(
-            indicator.busName,
-            indicator.menuPath,
-            indicator
-        );
+        const client = new DBusMenu.Client(indicator.busName,
+            indicator.menuPath, indicator);
 
+        // Attach only once: attachToMenu() connects its handlers every time
+        let attached = false;
         const attach = () => {
-            client.attachToMenu(subMenu.menu);
-            // Add "Show on Panel" AFTER DBus menu items
-            // (attachToMenu calls removeAll, so we must add after)
-            this._addManagementItems(subMenu, indicator);
+            if (attached || !client.isReady)
+                return;
+
+            attached = true;
+            client.attachToMenu(section);
         };
 
-        if (client.isReady)
-            attach();
-
-        const readyId = client.connect('ready-changed', () => {
-            if (client.isReady)
-                attach();
-        });
+        const readyId = client.connect('ready-changed', attach);
         this._menuClients.push({client, readyId});
+        attach();
     }
 
     _addManagementItems(subMenu, indicator) {
-        const manager =
-            OverflowManagerModule.OverflowManager.getDefault();
+        const manager = OverflowManagerModule.OverflowManager.getDefault();
         if (!manager || !indicator.appId)
             return;
 
-        const separator =
-            new PopupMenu.PopupSeparatorMenuItem();
+        const separator = new PopupMenu.PopupSeparatorMenuItem();
         subMenu.menu.addMenuItem(separator);
 
-        const showItem = new PopupMenu.PopupMenuItem(
-            'Show on Panel'
-        );
+        const showItem = new PopupMenu.PopupMenuItem('Show on Panel');
         showItem.connect('activate', () => {
             manager.unhideIcon(indicator.appId);
         });
@@ -172,6 +271,8 @@ class IndicatorOverflowButton extends PanelMenu.Button {
     _destroyMenuClients() {
         for (const {client, readyId} of this._menuClients) {
             client.disconnect(readyId);
+            // Stop pending async item insertions of the client
+            client.cancellable.cancel();
             client.destroy();
         }
         this._menuClients = [];

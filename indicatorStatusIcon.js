@@ -17,6 +17,7 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 
 import * as AppDisplay from 'resource:///org/gnome/shell/ui/appDisplay.js';
@@ -27,6 +28,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import * as AppIndicator from './appIndicator.js';
 import * as OverflowManager from './overflowManager.js';
+import * as WindowManager from './windowManager.js';
 import * as PromiseUtils from './promiseUtils.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
@@ -77,6 +79,7 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     _init(menuAlignment, nameText, iconActor, dontCreateMenu) {
         super._init(menuAlignment, nameText, dontCreateMenu);
 
+        // Must be defined before the first _showIfReady() call below
         this._isOverflowed = false;
 
         const settings = SettingsManager.getDefaultGSettings();
@@ -137,8 +140,10 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     }
 
     setOverflowed(overflowed) {
+        overflowed = !!overflowed;
         if (this._isOverflowed === overflowed)
             return;
+
         this._isOverflowed = overflowed;
         if (overflowed)
             this.visible = false;
@@ -198,6 +203,9 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
             Util.disconnectSmart(settings, this, this._compactModeEnabledIds);
             delete this._compactModeEnabledIds;
+
+            Util.disconnectSmart(settings, this, this._iconSpacingIds);
+            delete this._iconSpacingIds;
         } else if (this._icon && !monitoring) {
             this._iconSaturationIds =
                 Util.connectSmart(settings, 'changed::icon-saturation', this,
@@ -211,20 +219,19 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
             this._compactModeEnabledIds =
                 Util.connectSmart(settings, 'changed::compact-mode-enabled', this,
                     this._updateCompactMode);
+            this._iconSpacingIds =
+                Util.connectSmart(settings, 'changed::icon-spacing', this,
+                    this._updateCompactMode);
         }
     }
 
     static get DEFAULT_STYLE() {
-        const settings = SettingsManager.getDefaultGSettings();
-        if (!settings.get_boolean('compact-mode-enabled'))
-            return null; // drop to default -natural-hpadding.
-
-        return '-natural-hpadding: 10px';
+        return compactModeStyle();
     }
 
     _updateCompactMode() {
         this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
-        this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
+        updateCompactModeStyle(this);
     }
 
     _updateSaturation() {
@@ -262,6 +269,33 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     }
 });
 
+/**
+ * The horizontal padding of a panel button in compact mode, taken from
+ * icon-spacing, or null to fall back to the padding of the theme.
+ *
+ * @returns {string|null} the inline style, if any
+ */
+export function compactModeStyle() {
+    const settings = SettingsManager.getDefaultGSettings();
+    if (!settings.get_boolean('compact-mode-enabled'))
+        return null;
+
+    const spacing = Math.max(settings.get_int('icon-spacing'), 0);
+    return `-natural-hpadding: ${spacing}px; ` +
+        `-minimum-hpadding: ${Math.min(spacing, 6)}px`;
+}
+
+/**
+ * Applies the compact mode padding to a panel button.
+ *
+ * @param {PanelMenu.Button} button - the panel button to style
+ */
+export function updateCompactModeStyle(button) {
+    button.set_style(compactModeStyle());
+    // ButtonBox only caches the paddings on style change, it does not relayout
+    button.queue_relayout();
+}
+
 /*
  * IndicatorStatusIcon implements an icon in the system status area
  */
@@ -275,6 +309,19 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         this._clickGesture?.set_enabled(false);
 
         this._indicator = indicator;
+
+        // The icon waits off the panel until the manager has classified it:
+        // showing it first and hiding it once the appId is known makes the
+        // hidden ones flash, most visibly when the shell enables the
+        // extension again after the lock screen
+        this._isOverflowed = !!OverflowManager.OverflowManager.getDefault() &&
+            SettingsManager.getDefaultGSettings().get_boolean('pin-mode-enabled');
+
+        // Last visibility derived from the SNI status only (overflow ignored),
+        // so checkAlive() is triggered by status changes and not by overflow.
+        // An item counts as Active until it says otherwise, which is what the
+        // upstream logic assumed by comparing to a fresh actor.
+        this._statusVisible = true;
 
         this._lastClickTime = -1;
         this._lastClickX = -1;
@@ -349,10 +396,14 @@ class IndicatorStatusIcon extends BaseStatusIcon {
     }
 
     _updateStatus() {
-        const wasVisible = this.visible;
-        this.visible = this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
+        const wasStatusVisible = this._statusVisible;
+        this._statusVisible =
+            this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
 
-        if (this.visible !== wasVisible)
+        // An overflowed icon must never reappear on the panel
+        this.visible = !this._isOverflowed && this._statusVisible;
+
+        if (this._statusVisible !== wasStatusVisible)
             this._indicator.checkAlive().catch(logError);
     }
 
@@ -381,8 +432,13 @@ class IndicatorStatusIcon extends BaseStatusIcon {
     }
 
     _showIfReady() {
-        if (!this.isReady())
+        // The override runs from the base constructor too, before there is an
+        // indicator, and an actor is visible by default: an icon that is not
+        // ready yet has to be hidden here, or it shows up empty
+        if (!this.isReady()) {
+            this.visible = false;
             return;
+        }
 
         this._updateLabel();
         this._updateStatus();
@@ -519,6 +575,12 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             return Clutter.EVENT_PROPAGATE;
         }
 
+        // Left click raises or minimizes the app windows, like a taskbar entry
+        this._windowsToggled = event.get_button() === Clutter.BUTTON_PRIMARY &&
+            WindowManager.toggleWindows(this._indicator, event.get_time());
+        if (this._windowsToggled)
+            return Clutter.EVENT_STOP;
+
         const doubleClickHandled = this._maybeHandleDoubleClick(event);
         if (doubleClickHandled === Clutter.EVENT_PROPAGATE &&
             event.get_button() === Clutter.BUTTON_PRIMARY &&
@@ -557,12 +619,20 @@ class IndicatorTrayIcon extends BaseStatusIcon {
         this.add_style_class_name('appindicator-icon');
         this.add_style_class_name('tray-icon');
 
-        this.connect('button-press-event', (_actor, _event) => {
-            this.add_style_pseudo_class('active');
+        this.connect('button-press-event', (_actor, event) => {
+            // Only highlight the click we handle ourselves: for the other
+            // buttons the app grabs the pointer to show its own menu, so the
+            // release never arrives here and the highlight would be stuck
+            if (event.get_button() === Clutter.BUTTON_PRIMARY)
+                this.add_style_pseudo_class('active');
             return Clutter.EVENT_PROPAGATE;
         });
         this.connect('button-release-event', (_actor, event) => {
-            this._icon.click(event);
+            // Left click raises or minimizes the app windows, like a taskbar
+            // entry; the icon only gets the click when no app is found
+            if (event.get_button() !== Clutter.BUTTON_PRIMARY ||
+                !WindowManager.toggleTrayIconWindows(this._icon, event.get_time()))
+                this._icon.click(event);
             this.remove_style_pseudo_class('active');
             return Clutter.EVENT_PROPAGATE;
         });
@@ -590,6 +660,60 @@ class IndicatorTrayIcon extends BaseStatusIcon {
             this._updateIconSize());
 
         this._updateIconSize();
+
+        Util.connectSmart(this.container, 'parent-set', this, () =>
+            this._watchPanelBox());
+        this._watchPanelBox();
+    }
+
+    // The X window of a legacy icon is only moved when the icon actor itself
+    // gets an allocation. When the box that holds it changes size (a neighbor
+    // appears, disappears or gets wider) its children keep their place inside
+    // it, nothing is re-allocated and the window stays behind, drawn on top
+    // of the neighboring icon. Watch the box and move the icon along with it.
+    _watchPanelBox() {
+        if (this._panelBox) {
+            Util.disconnectSmart(this._panelBox, this, this._panelBoxSignalIds);
+            delete this._panelBox;
+            delete this._panelBoxSignalIds;
+        }
+
+        const parent = this.container.get_parent();
+        if (!parent)
+            return;
+
+        this._panelBox = parent;
+        this._panelBoxSignalIds = Util.connectSmart(parent,
+            'notify::allocation', this, () =>
+                this._repositionIcon().catch(logError));
+    }
+
+    async _repositionIcon() {
+        // The box is still being allocated, so both the new position and the
+        // relayout have to wait for the end of the current frame
+        if (this._repositionLater)
+            return;
+
+        this._repositionLater = new PromiseUtils.MetaLaterPromise(
+            Meta.LaterType.BEFORE_REDRAW);
+
+        try {
+            await this._repositionLater;
+        } catch (e) {
+            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                throw e;
+            return;
+        } finally {
+            delete this._repositionLater;
+        }
+
+        const [x, y] = this.container.get_transformed_position();
+        if (!Number.isFinite(x) || (x === this._stageX && y === this._stageY))
+            return;
+
+        this._stageX = x;
+        this._stageY = y;
+        this._icon?.queue_relayout();
     }
 
     _onDestroy() {
@@ -597,6 +721,9 @@ class IndicatorTrayIcon extends BaseStatusIcon {
 
         if (this._waitDoubleClickPromise)
             this._waitDoubleClickPromise.cancel();
+
+        if (this._repositionLater)
+            this._repositionLater.cancel();
 
         super._onDestroy();
     }
@@ -628,7 +755,7 @@ class IndicatorTrayIcon extends BaseStatusIcon {
 
     vfunc_touch_event(event) {
         // Under X11 we rely on emulated pointer events
-        if (!imports.gi.Meta.is_wayland_compositor())
+        if (!Meta.is_wayland_compositor())
             return Clutter.EVENT_PROPAGATE;
 
         const slot = event.get_event_sequence().get_slot();

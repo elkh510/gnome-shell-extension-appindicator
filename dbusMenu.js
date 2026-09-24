@@ -929,7 +929,8 @@ export class Client extends Signals.EventEmitter {
         this._itemsBeingAdded.add(child);
 
         idlePromise.then(() => {
-            if (!this._itemsBeingAdded.has(child))
+            // The client may have been destroyed while the item was pending
+            if (!this._itemsBeingAdded?.has(child))
                 return;
 
             this._rootMenu.addMenuItem(
@@ -937,7 +938,7 @@ export class Client extends Signals.EventEmitter {
         }).catch(e => {
             if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 logError(e);
-        }).finally(() => this._itemsBeingAdded.delete(child));
+        }).finally(() => this._itemsBeingAdded?.delete(child));
     }
 
     _onRootChildRemoved(dbusItem, child) {
@@ -949,7 +950,7 @@ export class Client extends Signals.EventEmitter {
         if (item)
             item.destroy();
         else
-            this._itemsBeingAdded.delete(child);
+            this._itemsBeingAdded?.delete(child);
     }
 
     _onRootChildMoved(dbusItem, child, oldpos, newpos) {
