@@ -292,7 +292,10 @@ var MetaLaterPromise = class extends CancellablePromise {
         let id;
         super(resolve => {
             id = Meta.later_add(laterType, () => {
-                this.remove();
+                // The later takes itself out by returning SOURCE_REMOVE, so
+                // the id is dropped here and the cleanup does not remove a
+                // later that is gone already
+                this._id = 0;
                 resolve();
                 return GLib.SOURCE_REMOVE;
             });
