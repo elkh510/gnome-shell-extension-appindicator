@@ -64,6 +64,23 @@ class IndicatorOverflowButton extends PanelMenu.Button {
         this._clickGesture?.set_enabled(false);
 
         this._menuClients = [];
+
+        // The menu hugs its entries: a popup menu of the shell has a minimum
+        // width of its own, which leaves a gap between the name and the arrow
+        // The menu hugs its entries: a popup menu of the shell is wider than
+        // that on its own, which leaves a gap between the name and the arrow.
+        // The shell puts a style of its own on the menu every time it opens,
+        // so the width goes on top of that one.
+        this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (!isOpen)
+                return;
+
+            const style = this.menu.actor.get_style() ?? '';
+            if (!style.includes('min-width'))
+                this.menu.actor.set_style(`${style} min-width: 0;`);
+
+            this.menu.box.set_style('min-width: 0;');
+        });
         this._openedEntryMenu = null;
 
         // Submenus created by the DBus menu inside an entry report their
@@ -198,6 +215,11 @@ class IndicatorOverflowButton extends PanelMenu.Button {
                 // Without a layout manager the arrow is placed at the origin
                 // of the actor, which leaves it off center inside the padding
                 expander.layout_manager = new Clutter.BinLayout();
+
+                // The ornament column of a menu item is for radio and check
+                // marks, which an entry of this menu never has
+                const ornament = subMenu._ornamentIcon ?? subMenu._ornamentLabel;
+                ornament?.hide();
             }
 
             // Left click on the row = activate/toggle window + close overflow.
