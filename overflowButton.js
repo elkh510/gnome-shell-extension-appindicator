@@ -34,8 +34,6 @@ import * as WindowManager from './windowManager.js';
 const PANEL_ICON_SIZE = Panel.PANEL_ICON_SIZE || 16;
 
 // Height of the divider that splits an entry from its expander, in logical px
-const DIVIDER_HEIGHT = 16;
-
 // The icon of the app behind a legacy XEmbed icon, for its overflow entry
 function _createAppIcon(statusIcon) {
     const icon = statusIcon.app?.create_icon_texture(PANEL_ICON_SIZE);
@@ -181,15 +179,21 @@ class IndicatorOverflowButton extends PanelMenu.Button {
 
                 subMenu.insert_child_below(new St.Widget({
                     style_class: 'appindicator-overflow-divider',
-                    y_align: Clutter.ActorAlign.CENTER,
+                    y_align: Clutter.ActorAlign.FILL,
+                    y_expand: true,
                     width: Math.max(1, Math.round(scaleFactor)),
-                    height: Math.round(DIVIDER_HEIGHT * scaleFactor),
                 }), expander);
 
                 expander.add_style_class_name('appindicator-overflow-expander');
                 expander.y_align = Clutter.ActorAlign.FILL;
                 expander.reactive = true;
                 expander.track_hover = true;
+
+                // The expander of the shell fills the row, which makes the
+                // half with the arrow as wide as the entry. Let the label
+                // take the room instead, so the arrow keeps to its own edge
+                expander.x_expand = false;
+                subMenu.label.x_expand = true;
 
                 // Without a layout manager the arrow is placed at the origin
                 // of the actor, which leaves it off center inside the padding
