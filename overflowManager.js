@@ -29,7 +29,6 @@ const AppIndicator = Extension.imports.appIndicator;
 const OverflowButton = Extension.imports.overflowButton;
 const SettingsManager = Extension.imports.settingsManager;
 const Util = Extension.imports.util;
-const WindowManager = Extension.imports.windowManager;
 
 const OVERFLOW_BUTTON_ROLE = 'appindicator-overflow';
 
@@ -126,17 +125,13 @@ var OverflowManager = class AppIndicatorsOverflowManager {
     }
 
     _recordKnownIndicator(statusIcon) {
-        const indicator = statusIcon._indicator;
-        const id = indicator ? indicator.appId : statusIcon.appId;
+        const id = statusIcon.appId;
         if (!id)
             return;
 
         const settings = SettingsManager.getDefaultGSettings();
         const known = settings.get_value('known-indicators').deep_unpack();
-        const title = indicator
-            ? WindowManager.findDesktopApp(indicator)?.get_name() ||
-                indicator.title || indicator.id || id
-            : statusIcon.title || id;
+        const title = statusIcon.title || id;
 
         const idx = known.findIndex(pair => pair[0] === id);
         if (idx >= 0) {
@@ -257,7 +252,6 @@ var OverflowManager = class AppIndicatorsOverflowManager {
 
         Main.panel.addToStatusArea(OVERFLOW_BUTTON_ROLE,
             this._overflowButton, -1, settings.get_string('tray-pos'));
-        this._placeOverflowButton();
     }
 
     // Moves the button right after the last indicator icon of its panel box.
@@ -271,13 +265,9 @@ var OverflowManager = class AppIndicatorsOverflowManager {
 
         const children = parent.get_children();
         let lastIconIndex = -1;
-        for (const [role, indicator] of Object.entries(Main.panel.statusArea)) {
-            if (!indicator || role === OVERFLOW_BUTTON_ROLE ||
-                !role.startsWith('appindicator-'))
-                continue;
-
+        for (const icon of this._trackedIcons.values()) {
             lastIconIndex = Math.max(lastIconIndex,
-                children.indexOf(indicator.container));
+                children.indexOf(icon.container));
         }
 
         if (lastIconIndex < 0)
@@ -315,10 +305,7 @@ var OverflowManager = class AppIndicatorsOverflowManager {
             this._updateTimeoutId = 0;
         }
 
-        if (this._overflowButton) {
-            this._overflowButton.destroy();
-            this._overflowButton = null;
-        }
+        this._overflowButton?.destroy();
 
         const settings = SettingsManager.getDefaultGSettings();
         this._settingsChangedIds.forEach(id => settings.disconnect(id));

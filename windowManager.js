@@ -41,7 +41,7 @@ const _desktopAppCache = new WeakMap();
 function toggleWindows(indicator, timestamp) {
     const desktopApp = findDesktopApp(indicator);
     let app = desktopApp?.get_windows().length ? desktopApp : _findRunningApp(indicator);
-    if (!app && desktopApp && _isElectron(_getExecutable(indicator._commandLine)))
+    if (!app && desktopApp && _isElectron(indicator.executable))
         app = desktopApp;
 
     return app ? _toggleAppWindows(app, timestamp) : false;
@@ -56,9 +56,13 @@ function toggleWindows(indicator, timestamp) {
  */
 function toggleTrayIconWindows(trayIcon, timestamp) {
     const app = findTrayIconApp(trayIcon);
-    const exe = _getPidExecutable(trayIcon.pid);
+    if (!app)
+        return false;
 
-    if (!app || (!app.get_windows().length && !_isElectron(exe)))
+    // The executable is only needed to tell whether an app that is closed
+    // to the tray can bring its window back
+    if (!app.get_windows().length &&
+        !_isElectron(_getPidExecutable(trayIcon.pid)))
         return false;
 
     return _toggleAppWindows(app, timestamp);
@@ -96,8 +100,8 @@ function findDesktopApp(indicator) {
         return null;
 
     // The command line is loaded asynchronously, resolve again once it is set
-    return _cachedLookup(indicator, indicator._commandLine || '', () =>
-        _lookupDesktopApp(_getExecutable(indicator._commandLine),
+    return _cachedLookup(indicator, indicator._commandLine, () =>
+        _lookupDesktopApp(indicator.executable,
             [indicator.id, indicator.title]));
 }
 
@@ -134,11 +138,35 @@ function _cachedLookup(key, cacheTag, lookup) {
     return app;
 }
 
+// The shell keeps indexes of the installed desktop files, which answer the
+// same question without walking them all
+function _lookupByName(name) {
+    if (!name)
+        return null;
+
+    const appSystem = Shell.AppSystem.get_default();
+    return appSystem.lookup_startup_wmclass(name) ??
+        appSystem.lookup_desktop_wmclass(name) ?? null;
+}
+
 // Scores installed apps: same executable, then StartupWMClass or desktop id
 // equal to one of the names, then an app specific install directory
 function _lookupDesktopApp(exe, names) {
     const appSystem = Shell.AppSystem.get_default();
     const exeBasename = exe ? GLib.path_get_basename(exe) : null;
+
+    for (const name of [...names, exeBasename]) {
+        const app = _lookupByName(name);
+        if (app)
+            return app;
+    }
+
+    if (exeBasename) {
+        const app = appSystem.lookup_heuristic_basename(exeBasename);
+        if (app)
+            return app;
+    }
+
     const lowerNames = [exeBasename, ...names]
         .filter(n => n).map(n => n.toLowerCase());
     const exeDir = exe ? GLib.path_get_dirname(exe) : null;
@@ -165,15 +193,14 @@ function _lookupDesktopApp(exe, names) {
             if (app) {
                 best = app;
                 bestScore = score;
+
+                if (bestScore === 3)
+                    break;
             }
         }
     }
 
     return best;
-}
-
-function _getExecutable(commandLine) {
-    return commandLine?.trim().split(/\s+/)[0] || null;
 }
 
 function _getPidExecutable(pid) {
@@ -187,13 +214,23 @@ function _getPidExecutable(pid) {
     }
 }
 
+const _electronPaths = new Map();
+
 function _isElectron(exe) {
     if (!exe || !GLib.path_is_absolute(exe))
         return false;
 
     const dir = GLib.path_get_dirname(exe);
-    return GLib.file_test(`${dir}/chrome_crashpad_handler`, GLib.FileTest.EXISTS) ||
-        GLib.file_test(`${dir}/resources/app.asar`, GLib.FileTest.EXISTS);
+    let isElectron = _electronPaths.get(dir);
+
+    if (isElectron === undefined) {
+        isElectron =
+            GLib.file_test(`${dir}/chrome_crashpad_handler`, GLib.FileTest.EXISTS) ||
+            GLib.file_test(`${dir}/resources/app.asar`, GLib.FileTest.EXISTS);
+        _electronPaths.set(dir, isElectron);
+    }
+
+    return isElectron;
 }
 
 // Fallback heuristics for apps without a matching desktop file

@@ -101,8 +101,13 @@ class AppIndicatorsIndicatorBaseStatusIcon extends PanelMenu.Button {
     _init(menuAlignment, nameText, iconActor, dontCreateMenu) {
         super._init(menuAlignment, nameText, dontCreateMenu);
 
-        // Must be defined before the first _showIfReady() call below
-        this._isOverflowed = false;
+        // The icon waits off the panel until the manager has classified it:
+        // showing it first and hiding it once the appId is known makes the
+        // hidden ones flash, most visibly when the shell enables the
+        // extension again after the lock screen. Must be set before the
+        // first _showIfReady() call below.
+        this._isOverflowed = !!OverflowManager.OverflowManager.getDefault() &&
+            SettingsManager.getDefaultGSettings().get_boolean('pin-mode-enabled');
 
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
@@ -165,7 +170,6 @@ class AppIndicatorsIndicatorBaseStatusIcon extends PanelMenu.Button {
     }
 
     setOverflowed(overflowed) {
-        overflowed = !!overflowed;
         if (this._isOverflowed === overflowed)
             return;
 
@@ -282,13 +286,6 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
             new AppIndicator.IconActor(indicator, Panel.PANEL_ICON_SIZE));
         this._indicator = indicator;
 
-        // The icon waits off the panel until the manager has classified it:
-        // showing it first and hiding it once the appId is known makes the
-        // hidden ones flash, most visibly when the shell enables the
-        // extension again after the lock screen
-        this._isOverflowed = !!OverflowManager.OverflowManager.getDefault() &&
-            SettingsManager.getDefaultGSettings().get_boolean('pin-mode-enabled');
-
         // Last visibility derived from the SNI status only (overflow ignored),
         // so checkAlive() is triggered by status changes and not by overflow.
         // An item counts as Active until it says otherwise, which is what the
@@ -337,6 +334,21 @@ class AppIndicatorsIndicatorStatusIcon extends BaseStatusIcon {
 
     get uniqueId() {
         return this._indicator.uniqueId;
+    }
+
+    // The same surface a legacy icon offers, so whoever holds an icon does
+    // not have to know which of the two kinds it got
+    get appId() {
+        return this._indicator.appId;
+    }
+
+    get app() {
+        return WindowManager.findDesktopApp(this._indicator);
+    }
+
+    get title() {
+        return this.app?.get_name() || this._indicator.title ||
+            this._indicator.id || this.appId;
     }
 
     isReady() {
@@ -606,11 +618,6 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
         super._init(0.5, icon.wm_class, icon, { dontCreateMenu: true });
         Util.Logger.debug(`Adding legacy tray icon ${this.uniqueId}`);
 
-        // Born off the panel while pin mode is on, so a hidden icon does not
-        // flash before the first pass of the manager, as for the SNI ones
-        this._isOverflowed = !!OverflowManager.OverflowManager.getDefault() &&
-            SettingsManager.getDefaultGSettings().get_boolean('pin-mode-enabled');
-
         this._box.add_style_class_name('appindicator-trayicons-box');
         this.add_style_class_name('appindicator-icon');
         this.add_style_class_name('tray-icon');
@@ -743,7 +750,7 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
     }
 
     get title() {
-        return this.app?.get_name() || this._icon.wm_class || this.appId;
+        return this.app?.get_name() || this._icon.wm_class;
     }
 
     vfunc_navigate_focus(from, direction) {

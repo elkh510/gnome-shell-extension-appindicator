@@ -1,14 +1,9 @@
-/* Divider that sets an overflow menu entry off from its expander, the way the
-   two halves of a split button are split */
-.appindicator-overflow-divider {
-    background-color: rgba(127, 127, 127, 0.55);
-}
-
 /* Expander of an overflow menu entry: a separate click target that opens the
-   app menu, highlighted on its own */
+   app menu, set off by a line the way the two halves of a split button are,
+   and highlighted on its own */
 .appindicator-overflow-expander {
     padding: 0 5px;
-    margin-left: 0;
+    border-left: 1px solid rgba(127, 127, 127, 0.55);
     border-radius: 0 4px 4px 0;
 }
 

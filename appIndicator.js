@@ -471,9 +471,13 @@ var AppIndicator = class AppIndicatorsAppIndicator {
 
         // The command line arrives after 'ready', and appId depends on it for
         // apps with an unstable SNI id. Emitted even when it could not be
-        // read, so that nothing keeps waiting for an id that will not change
-        this._commandLineResolved = true;
-        this.emit('command-line');
+        // read, so that nothing keeps waiting for an id that will not change.
+        // The reader runs again on every app start and stop, the command
+        // line it resolved does not change with it.
+        if (!this._commandLineResolved) {
+            this._commandLineResolved = true;
+            this.emit('command-line');
+        }
     }
 
     _checkIfReady() {
@@ -575,12 +579,17 @@ var AppIndicator = class AppIndicatorsAppIndicator {
     get appId() {
         const { id } = this;
         if (this._commandLine && isUnstableId(id)) {
-            const exe = this._commandLine.trim().split(/\s+/)[0];
-            const basename = exe.split('/').pop();
+            const basename = this.executable?.split('/').pop();
             if (basename)
                 return basename.toLowerCase();
         }
         return id;
+    }
+
+    // The program behind the indicator, as the command line of its process
+    // names it
+    get executable() {
+        return this._commandLine?.trim().split(/\s+/)[0] || null;
     }
 
     /**

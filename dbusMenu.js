@@ -785,6 +785,30 @@ const MenuItemFactory = {
 /**
  * Utility functions not necessarily belonging into the item factory
  */
+/**
+ * Keeps at most one submenu of a menu open. A submenu the DBus menu created
+ * inside an entry reports its open state to the top menu too
+ * (PopupSubMenu._getTopMenu() skips itself), and the default handler of the
+ * shell would collapse the entry that holds it.
+ *
+ * @param {PopupMenu.PopupMenu} menu - the menu to track the submenus of
+ */
+var trackOpenedSubMenu = function (menu) {
+    if (!NEED_NESTED_SUBMENU_FIX)
+        return;
+
+    menu._setOpenedSubMenu = submenu => {
+        const opened = menu._openedSubMenu;
+        if (!submenu || submenu._parent !== menu || submenu === opened)
+            return;
+
+        if (opened?.isOpen)
+            opened.close(true);
+
+        menu._openedSubMenu = submenu;
+    };
+};
+
 const MenuUtils = {
     moveItemInMenu(menu, dbusItem, newpos) {
         // HACK: we're really getting into the internals of the PopupMenu implementation
@@ -849,8 +873,7 @@ var Client = class AppIndicatorsClient {
         // cleanup: remove existing children (just in case)
         this._rootMenu.removeAll();
 
-        if (NEED_NESTED_SUBMENU_FIX)
-            menu._setOpenedSubMenu = this._setOpenedSubmenu.bind(this);
+        trackOpenedSubMenu(menu);
 
         // connect handlers
         Util.connectSmart(menu, 'open-state-changed', this, this._onMenuOpened);
@@ -867,22 +890,6 @@ var Client = class AppIndicatorsClient {
         const children = this._rootItem.getChildren();
         children.forEach(child =>
             this._onRootChildAdded(this._rootItem, child));
-    }
-
-    _setOpenedSubmenu(submenu) {
-        if (!submenu)
-            return;
-
-        if (submenu._parent !== this._rootMenu)
-            return;
-
-        if (submenu === this._openedSubMenu)
-            return;
-
-        if (this._openedSubMenu && this._openedSubMenu.isOpen)
-            this._openedSubMenu.close(true);
-
-        this._openedSubMenu = submenu;
     }
 
     _onRootChildAdded(dbusItem, child, position) {
@@ -929,8 +936,8 @@ var Client = class AppIndicatorsClient {
         this._client.active = state;
 
         if (state) {
-            if (this._openedSubMenu && this._openedSubMenu.isOpen)
-                this._openedSubMenu.close();
+            if (menu._openedSubMenu?.isOpen)
+                menu._openedSubMenu.close();
 
             this._rootItem.handleEvent('opened', null, 0);
             this._rootItem.sendAboutToShow();
@@ -941,6 +948,10 @@ var Client = class AppIndicatorsClient {
 
     destroy() {
         this.emit('destroy');
+
+        // Stops the item insertions that are still pending: their
+        // continuations would run against the fields cleared below
+        this.cancellable.cancel();
 
         if (this._client)
             this._client.destroy();

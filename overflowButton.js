@@ -50,12 +50,10 @@ function _createAppIcon(statusIcon) {
 
 // Whether an event happened on the expander of a submenu item. The expander
 // is reactive, so it is the source of its own events, no geometry needed
-function _isOnExpander(subMenu, event) {
-    const expander = subMenu._triangleBin;
+function _isOnExpander(expander, event) {
     const source = event.get_source();
 
-    return !!expander && !!source &&
-        (source === expander || expander.contains(source));
+    return !!expander && !!source && expander.contains(source);
 }
 
 var OverflowButton = GObject.registerClass(
@@ -65,15 +63,7 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
 
         this._menuClients = [];
 
-        this._openedEntryMenu = null;
-
-        // Submenus created by the DBus menu inside an entry report their
-        // open state to the top menu too (PopupSubMenu._getTopMenu() skips
-        // itself), and the default handler would collapse the entry holding
-        // them. Only track the direct entries of this menu, as
-        // DBusMenu.Client does for a regular indicator menu.
-        this.menu._setOpenedSubMenu = submenu =>
-            this._onEntryMenuOpened(submenu);
+        DBusMenu.trackOpenedSubMenu(this.menu);
 
         const box = new St.BoxLayout({ style_class: 'panel-status-indicators-box' });
         this._arrowIcon = new St.Icon({
@@ -119,31 +109,23 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
         return y + this.height / 2 < monitor.y + monitor.height / 2;
     }
 
-    _onEntryMenuOpened(submenu) {
-        if (!submenu || submenu._parent !== this.menu ||
-            submenu === this._openedEntryMenu)
+    updateMenu(overflowedIcons) {
+        // Rebuilding tears down the icon actors and the attached menus of
+        // every entry, so it only happens when the set really changed
+        const entryIds = overflowedIcons.map(icon => icon.uniqueId).join();
+        if (entryIds === this._entryIds)
             return;
 
-        if (this._openedEntryMenu && this._openedEntryMenu.isOpen)
-            this._openedEntryMenu.close(true);
-
-        this._openedEntryMenu = submenu;
-    }
-
-    updateMenu(overflowedIcons) {
+        this._entryIds = entryIds;
         this._destroyMenuClients();
         this.menu.removeAll();
-        this._openedEntryMenu = null;
 
         for (const statusIcon of overflowedIcons) {
             // A legacy XEmbed icon has no indicator behind it: its entry is
             // named and drawn after the app the shell resolved for it
             const indicator = statusIcon._indicator;
-            const appId = indicator ? indicator.appId : statusIcon.appId;
-            const label = (indicator
-                ? WindowManager.findDesktopApp(indicator)?.get_name() ||
-                    indicator.title
-                : statusIcon.title) || appId || 'Unknown';
+            const { appId } = statusIcon;
+            const label = statusIcon.title || appId || 'Unknown';
 
             // Use PopupSubMenuMenuItem: left click = activate window (or
             // the app menu when the app has no window), click on the arrow,
@@ -164,16 +146,6 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
             // off by a divider line, with the arrow centered on it
             const expander = subMenu._triangleBin;
             if (expander) {
-                const { scale_factor: scaleFactor } =
-                    St.ThemeContext.get_for_stage(global.stage);
-
-                subMenu.insert_child_below(new St.Widget({
-                    style_class: 'appindicator-overflow-divider',
-                    y_align: Clutter.ActorAlign.FILL,
-                    y_expand: true,
-                    width: Math.max(1, Math.round(scaleFactor)),
-                }), expander);
-
                 expander.add_style_class_name('appindicator-overflow-expander');
                 expander.y_align = Clutter.ActorAlign.FILL;
                 expander.reactive = true;
@@ -198,7 +170,7 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
                     return Clutter.EVENT_PROPAGATE;
 
                 // Let the expander arrow open the app menu, as in the panel
-                if (_isOnExpander(subMenu, event))
+                if (_isOnExpander(expander, event))
                     return Clutter.EVENT_PROPAGATE;
 
                 // A tray only app has no window to raise, so the click stays
@@ -294,8 +266,6 @@ class AppIndicatorsOverflowButton extends PanelMenu.Button {
     _destroyMenuClients() {
         for (const { client, readyId } of this._menuClients) {
             client.disconnect(readyId);
-            // Stop pending async item insertions of the client
-            client.cancellable.cancel();
             client.destroy();
         }
         this._menuClients = [];
