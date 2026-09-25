@@ -531,9 +531,13 @@ export class AppIndicator extends Signals.EventEmitter {
 
         // The app behind an unstable SNI id is only known now, and appId
         // depends on it. Emitted in every case, also when nothing could be
-        // read, so that nothing keeps waiting for an id that will not change
-        this._appInfoResolved = true;
-        this.emit('app-info');
+        // read, so that nothing keeps waiting for an id that will not change.
+        // _updateAppInfo() runs again whenever an app starts or stops, the
+        // id it resolved does not change with it.
+        if (!this._appInfoResolved) {
+            this._appInfoResolved = true;
+            this.emit('app-info');
+        }
     }
 
     _checkIfReady() {
@@ -641,9 +645,14 @@ export class AppIndicator extends Signals.EventEmitter {
         if (desktopId)
             return desktopId.toLowerCase();
 
-        const exe = this._commandLine?.trim().split(/\s+/)[0];
-        const basename = exe?.split('/').pop();
+        const basename = this.executable?.split('/').pop();
         return basename ? basename.toLowerCase() : id;
+    }
+
+    // The program behind the indicator, as the command line of its process
+    // names it
+    get executable() {
+        return this._commandLine?.trim().split(/\s+/)[0] || null;
     }
 
     /**

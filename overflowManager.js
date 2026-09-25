@@ -23,7 +23,6 @@ import {SNIStatus} from './appIndicator.js';
 import {OverflowButton} from './overflowButton.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
-import * as WindowManager from './windowManager.js';
 
 const OVERFLOW_BUTTON_ROLE = 'appindicator-overflow';
 
@@ -124,18 +123,14 @@ export class OverflowManager extends Signals.EventEmitter {
     }
 
     _recordKnownIndicator(statusIcon) {
-        const indicator = statusIcon._indicator;
-        const id = indicator ? indicator.appId : statusIcon.appId;
+        const id = statusIcon.appId;
         if (!id)
             return;
 
         const settings = SettingsManager.getDefaultGSettings();
         const known = settings.get_value('known-indicators')
             .deep_unpack();
-        const title = indicator
-            ? WindowManager.findDesktopApp(indicator)?.get_name() ||
-                indicator.title || indicator.id || id
-            : statusIcon.title || id;
+        const title = statusIcon.title || id;
 
         const idx = known.findIndex(pair => pair[0] === id);
         if (idx >= 0) {
@@ -187,34 +182,26 @@ export class OverflowManager extends Signals.EventEmitter {
         for (const icon of allIcons) {
             const indicator = icon._indicator;
 
-            // A legacy XEmbed icon carries no SNI, but the class of its X
-            // window is a stable id, so it is hidden like any other
-            if (!indicator) {
-                const hidden = !!icon.appId && hiddenIds.includes(icon.appId);
-                icon.setOverflowed(hidden);
-
-                if (hidden && icon.isReady())
-                    overflowedIcons.push(icon);
-                continue;
-            }
-
             // An icon whose appId is not final yet stays off the panel: it
             // may well be a hidden one, and showing it until the id arrives
             // makes it flash. It is kept out of the overflow menu too, as its
             // entry would carry the name and icon of an unidentified app.
-            if (indicator.appIdPending) {
+            if (indicator?.appIdPending) {
                 icon.setOverflowed(true);
                 continue;
             }
 
-            // The decision does not depend on the SNI status, so an icon the
-            // app turns active again does not appear on the panel first
-            const hidden = hiddenIds.includes(indicator.appId);
+            // A legacy XEmbed icon carries no SNI, but the class of its X
+            // window is a stable id, so it is hidden like any other. The
+            // decision does not depend on the SNI status either, so an icon
+            // the app turns active again does not appear on the panel first.
+            const {appId} = icon;
+            const hidden = !!appId && hiddenIds.includes(appId);
             icon.setOverflowed(hidden);
 
             // Only the icons the app currently shows belong in the menu
-            if (hidden && indicator.isReady &&
-                indicator.status !== SNIStatus.PASSIVE)
+            if (hidden && icon.isReady() &&
+                indicator?.status !== SNIStatus.PASSIVE)
                 overflowedIcons.push(icon);
         }
 
@@ -234,9 +221,8 @@ export class OverflowManager extends Signals.EventEmitter {
             }
             this._overflowButton.updateMenu(overflowedIcons);
             this._placeOverflowButton();
-        } else if (this._overflowButton) {
-            this._overflowButton.destroy();
-            this._overflowButton = null;
+        } else {
+            this._overflowButton?.destroy();
         }
     }
 
@@ -258,7 +244,6 @@ export class OverflowManager extends Signals.EventEmitter {
         Main.panel.addToStatusArea(OVERFLOW_BUTTON_ROLE,
             this._overflowButton, -1,
             settings.get_string('tray-pos'));
-        this._placeOverflowButton();
     }
 
     // Moves the button right after the last indicator icon of its panel box.
@@ -272,13 +257,9 @@ export class OverflowManager extends Signals.EventEmitter {
 
         const children = parent.get_children();
         let lastIconIndex = -1;
-        for (const [role, indicator] of Object.entries(Main.panel.statusArea)) {
-            if (!indicator || role === OVERFLOW_BUTTON_ROLE ||
-                !role.startsWith('appindicator-'))
-                continue;
-
+        for (const icon of this._trackedIcons.values()) {
             lastIconIndex = Math.max(lastIconIndex,
-                children.indexOf(indicator.container));
+                children.indexOf(icon.container));
         }
 
         if (lastIconIndex < 0)
@@ -316,10 +297,7 @@ export class OverflowManager extends Signals.EventEmitter {
             this._updateTimeoutId = 0;
         }
 
-        if (this._overflowButton) {
-            this._overflowButton.destroy();
-            this._overflowButton = null;
-        }
+        this._overflowButton?.destroy();
 
         const settings = SettingsManager.getDefaultGSettings();
         for (const id of this._settingsChangedIds)
