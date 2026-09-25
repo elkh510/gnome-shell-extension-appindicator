@@ -59,11 +59,11 @@ function addIconToPanel(statusIcon) {
     Main.panel.addToStatusArea(indicatorId, statusIcon, 1,
         settings.get_string('tray-pos'));
 
-    if (statusIcon instanceof IndicatorStatusIcon) {
-        const manager = OverflowManager.OverflowManager.getDefault();
-        if (manager)
-            manager.registerIcon(statusIcon);
-    }
+    // Legacy XEmbed icons are tracked too: they have no SNI, but the class
+    // of their X window identifies them well enough to be hidden
+    const manager = OverflowManager.OverflowManager.getDefault();
+    if (manager)
+        manager.registerIcon(statusIcon);
 
     Util.connectSmart(settings, 'changed::tray-pos', statusIcon, () =>
         addIconToPanel(statusIcon));
@@ -605,6 +605,12 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
     _init(icon) {
         super._init(0.5, icon.wm_class, icon, { dontCreateMenu: true });
         Util.Logger.debug(`Adding legacy tray icon ${this.uniqueId}`);
+
+        // Born off the panel while pin mode is on, so a hidden icon does not
+        // flash before the first pass of the manager, as for the SNI ones
+        this._isOverflowed = !!OverflowManager.OverflowManager.getDefault() &&
+            SettingsManager.getDefaultGSettings().get_boolean('pin-mode-enabled');
+
         this._box.add_style_class_name('appindicator-trayicons-box');
         this.add_style_class_name('appindicator-icon');
         this.add_style_class_name('tray-icon');
@@ -724,6 +730,20 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
 
     get uniqueId() {
         return `legacy:${this._icon.wm_class}:${this._icon.pid}`;
+    }
+
+    // The pid changes with every start, the class of the X window does not,
+    // so that is what the hidden set is keyed by
+    get appId() {
+        return this._icon.wm_class ? `legacy:${this._icon.wm_class}` : null;
+    }
+
+    get app() {
+        return WindowManager.findTrayIconApp(this._icon);
+    }
+
+    get title() {
+        return this.app?.get_name() || this._icon.wm_class || this.appId;
     }
 
     vfunc_navigate_focus(from, direction) {

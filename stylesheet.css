@@ -7,8 +7,8 @@
 /* Expander of an overflow menu entry: a separate click target that opens the
    app menu, highlighted on its own */
 .appindicator-overflow-expander {
-    padding: 0 8px;
-    margin-left: 8px;
+    padding: 0 4px;
+    margin-left: 4px;
     border-radius: 4px;
 }
 

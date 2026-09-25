@@ -14,7 +14,8 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-/* exported toggleWindows, toggleTrayIconWindows, findDesktopApp */
+/* exported toggleWindows, toggleTrayIconWindows, findDesktopApp,
+            findTrayIconApp */
 
 const GLib = imports.gi.GLib;
 const Shell = imports.gi.Shell;
@@ -54,18 +55,33 @@ function toggleWindows(indicator, timestamp) {
  * @returns {boolean} true if handled, false to forward the click to the icon
  */
 function toggleTrayIconWindows(trayIcon, timestamp) {
+    const app = findTrayIconApp(trayIcon);
     const exe = _getPidExecutable(trayIcon.pid);
-    let app = trayIcon.pid ? WindowTracker.get_app_from_pid(trayIcon.pid) : null;
-
-    if (!app) {
-        app = _cachedLookup(trayIcon, trayIcon.wm_class, () =>
-            _lookupDesktopApp(exe, [trayIcon.wm_class]));
-    }
 
     if (!app || (!app.get_windows().length && !_isElectron(exe)))
         return false;
 
     return _toggleAppWindows(app, timestamp);
+}
+
+/**
+ * Find the app behind a legacy XEmbed tray icon, whether it has windows or
+ * not. Same as findDesktopApp() for the icons that carry no SNI.
+ *
+ * @param {Shell.TrayIcon} trayIcon - the legacy tray icon
+ * @returns {Shell.App|null} the app, if any
+ */
+function findTrayIconApp(trayIcon) {
+    if (!trayIcon)
+        return null;
+
+    const app = trayIcon.pid
+        ? WindowTracker.get_app_from_pid(trayIcon.pid) : null;
+    if (app)
+        return app;
+
+    return _cachedLookup(trayIcon, trayIcon.wm_class, () =>
+        _lookupDesktopApp(_getPidExecutable(trayIcon.pid), [trayIcon.wm_class]));
 }
 
 /**
