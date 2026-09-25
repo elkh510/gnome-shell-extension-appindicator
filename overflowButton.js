@@ -34,7 +34,17 @@ import * as WindowManager from './windowManager.js';
 const PANEL_ICON_SIZE = Panel.PANEL_ICON_SIZE || 16;
 
 // Height of the divider that splits an entry from its expander, in logical px
-const DIVIDER_HEIGHT = 18;
+const DIVIDER_HEIGHT = 16;
+
+// The icon of the app behind a legacy XEmbed icon, for its overflow entry
+function _createAppIcon(statusIcon) {
+    const icon = statusIcon.app?.create_icon_texture(PANEL_ICON_SIZE);
+
+    return icon ?? new St.Icon({
+        icon_name: 'application-x-executable-symbolic',
+        icon_size: PANEL_ICON_SIZE,
+    });
+}
 
 // Whether an event happened on the expander of a submenu item. The expander
 // is reactive, so it is the source of its own events, no geometry needed
@@ -139,13 +149,14 @@ class IndicatorOverflowButton extends PanelMenu.Button {
         this._openedEntryMenu = null;
 
         for (const statusIcon of overflowedIcons) {
+            // A legacy XEmbed icon has no indicator behind it: its entry is
+            // named and drawn after the app the shell resolved for it
             const indicator = statusIcon._indicator;
-            if (!indicator)
-                continue;
-
-            const desktopApp = WindowManager.findDesktopApp(indicator);
-            const label = desktopApp?.get_name() || indicator.title ||
-                indicator.appId || 'Unknown';
+            const appId = indicator ? indicator.appId : statusIcon.appId;
+            const label = (indicator
+                ? WindowManager.findDesktopApp(indicator)?.get_name() ||
+                    indicator.title
+                : statusIcon.title) || appId || 'Unknown';
 
             // Use PopupSubMenuMenuItem: left click = activate window (or
             // the app menu when the app has no window), click on the arrow,
@@ -153,9 +164,12 @@ class IndicatorOverflowButton extends PanelMenu.Button {
             const subMenu = new PopupMenu.PopupSubMenuMenuItem(label, false);
 
             // Same icon as on the panel: a live icon actor of the indicator,
-            // at the panel size, following icon changes
-            const iconActor = new AppIndicator.IconActor(indicator,
-                PANEL_ICON_SIZE);
+            // at the panel size, following icon changes. The X window of a
+            // legacy icon cannot be in two places at once, so its entry gets
+            // the icon of the app instead
+            const iconActor = indicator
+                ? new AppIndicator.IconActor(indicator, PANEL_ICON_SIZE)
+                : _createAppIcon(statusIcon);
             iconActor.reactive = false;
             subMenu.insert_child_at_index(iconActor, 0);
 
@@ -197,7 +211,11 @@ class IndicatorOverflowButton extends PanelMenu.Button {
                 // a plain click: let the class handler open the app menu,
                 // which is all such an app has to offer (an overflowed icon
                 // always has one, isReady() requires a menu path)
-                if (!WindowManager.toggleWindows(indicator, event.get_time()))
+                const raised = indicator
+                    ? WindowManager.toggleWindows(indicator, event.get_time())
+                    : WindowManager.toggleTrayIconWindows(statusIcon.icon,
+                        event.get_time());
+                if (!raised)
                     return Clutter.EVENT_PROPAGATE;
 
                 // Normally cleared by the skipped class handler
@@ -208,16 +226,22 @@ class IndicatorOverflowButton extends PanelMenu.Button {
 
             // The DBus menu gets its own section: the client adds items
             // asynchronously (and removeAll()s its root menu on attach), so
-            // this keeps the management items always at the bottom.
-            const dbusMenuSection = new PopupMenu.PopupMenuSection();
-            subMenu.menu.addMenuItem(dbusMenuSection);
-            this._addManagementItems(subMenu, indicator);
+            // this keeps the management items always at the bottom. A legacy
+            // icon has no menu to offer, only the way back to the panel.
+            const dbusMenuSection = indicator
+                ? new PopupMenu.PopupMenuSection() : null;
+            if (dbusMenuSection)
+                subMenu.menu.addMenuItem(dbusMenuSection);
+            this._addManagementItems(subMenu, appId);
 
             this.menu.addMenuItem(subMenu);
 
             // Attach the DBus menu on first use: asking every app for its menu
             // on each rebuild is needless traffic, and some of them log errors
             // for an AboutToShow of a menu that is not shown
+            if (!dbusMenuSection)
+                continue;
+
             const openId = subMenu.menu.connect('open-state-changed',
                 (_menu, isOpen) => {
                     if (!isOpen)
@@ -258,9 +282,9 @@ class IndicatorOverflowButton extends PanelMenu.Button {
         attach();
     }
 
-    _addManagementItems(subMenu, indicator) {
+    _addManagementItems(subMenu, appId) {
         const manager = OverflowManagerModule.OverflowManager.getDefault();
-        if (!manager || !indicator.appId)
+        if (!manager || !appId)
             return;
 
         const separator = new PopupMenu.PopupSeparatorMenuItem();
@@ -268,7 +292,7 @@ class IndicatorOverflowButton extends PanelMenu.Button {
 
         const showItem = new PopupMenu.PopupMenuItem('Show on Panel');
         showItem.connect('activate', () => {
-            manager.unhideIcon(indicator.appId);
+            manager.unhideIcon(appId);
         });
         subMenu.menu.addMenuItem(showItem);
     }

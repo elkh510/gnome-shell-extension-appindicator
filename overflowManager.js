@@ -125,15 +125,17 @@ export class OverflowManager extends Signals.EventEmitter {
 
     _recordKnownIndicator(statusIcon) {
         const indicator = statusIcon._indicator;
-        if (!indicator?.appId)
+        const id = indicator ? indicator.appId : statusIcon.appId;
+        if (!id)
             return;
 
         const settings = SettingsManager.getDefaultGSettings();
         const known = settings.get_value('known-indicators')
             .deep_unpack();
-        const id = indicator.appId;
-        const title = WindowManager.findDesktopApp(indicator)?.get_name() ||
-            indicator.title || indicator.id || id;
+        const title = indicator
+            ? WindowManager.findDesktopApp(indicator)?.get_name() ||
+                indicator.title || indicator.id || id
+            : statusIcon.title || id;
 
         const idx = known.findIndex(pair => pair[0] === id);
         if (idx >= 0) {
@@ -185,8 +187,14 @@ export class OverflowManager extends Signals.EventEmitter {
         for (const icon of allIcons) {
             const indicator = icon._indicator;
 
+            // A legacy XEmbed icon carries no SNI, but the class of its X
+            // window is a stable id, so it is hidden like any other
             if (!indicator) {
-                icon.setOverflowed(false);
+                const hidden = !!icon.appId && hiddenIds.includes(icon.appId);
+                icon.setOverflowed(hidden);
+
+                if (hidden && icon.isReady())
+                    overflowedIcons.push(icon);
                 continue;
             }
 
