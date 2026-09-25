@@ -297,7 +297,10 @@ export class MetaLaterPromise extends CancellablePromise {
         let id;
         super(resolve => {
             const callback = () => {
-                this.remove();
+                // The later takes itself out by returning SOURCE_REMOVE, so
+                // the id is dropped here and the cleanup does not remove a
+                // later that is gone already
+                this._id = 0;
                 resolve();
                 return GLib.SOURCE_REMOVE;
             };
