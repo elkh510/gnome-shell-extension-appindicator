@@ -697,8 +697,10 @@ class AppIndicatorsIndicatorTrayIcon extends BaseStatusIcon {
         if (this._repositionLater)
             return;
 
-        this._repositionLater = new PromiseUtils.MetaLaterPromise(
-            Meta.LaterType.BEFORE_REDRAW);
+        // The type check of the promise compares the constructor of the
+        // value against Meta.LaterType, which a plain enum member never
+        // matches, so the type is left to its default (BEFORE_REDRAW)
+        this._repositionLater = new PromiseUtils.MetaLaterPromise();
 
         try {
             await this._repositionLater;
