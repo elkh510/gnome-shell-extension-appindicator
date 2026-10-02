@@ -27,9 +27,9 @@ const GENERIC_DIRS = ['/bin', '/sbin', '/usr/bin', '/usr/sbin', '/usr/local/bin'
 
 /**
  * Toggle windows for an indicator, like a taskbar entry: minimize if the app
- * is focused, activate its windows otherwise. An Electron app without windows
- * (closed to tray) gets a new window; its single instance lock brings back
- * the existing one.
+ * is focused, activate its windows otherwise. An app without windows (closed
+ * to tray) is launched again when its running instance is known to take the
+ * launch and bring its window back.
  *
  * @param {AppIndicator} indicator - the SNI indicator
  * @param {number} timestamp - event time
@@ -52,14 +52,21 @@ export function toggleTrayIconWindows(trayIcon, timestamp) {
         () => _getPidExecutable(trayIcon.pid));
 }
 
-// An app that is closed to the tray has no window to raise. Electron brings
-// its window back on a new one, everything else is left to the icon itself.
-// The executable is only read when it is needed for that question.
 function _toggleWindowsOf(app, timestamp, getExecutable) {
-    if (!app || (!app.get_windows().length && !_isElectron(getExecutable())))
+    if (!app || (!app.get_windows().length && !_reopensWindow(app, getExecutable)))
         return false;
 
     return _toggleAppWindows(app, timestamp);
+}
+
+// An app that is closed to the tray has no window to raise. A second launch
+// reaches the running instance in two cases: a D-Bus activatable app is
+// activated over the bus instead of being started, and Electron hands the
+// launch over through its single instance lock. The executable is only read
+// when the desktop file does not answer the question.
+function _reopensWindow(app, getExecutable) {
+    return app.appInfo?.get_boolean('DBusActivatable') ||
+        _isElectron(getExecutable());
 }
 
 /**
