@@ -30,9 +30,9 @@ const _desktopAppCache = new WeakMap();
 
 /**
  * Toggle windows for an indicator, like a taskbar entry: minimize if the app
- * is focused, activate its windows otherwise. An Electron app without windows
- * (closed to tray) gets a new window; its single instance lock brings back
- * the existing one.
+ * is focused, activate its windows otherwise. An app without windows (closed
+ * to tray) is launched again when its running instance is known to take the
+ * launch and bring its window back.
  *
  * @param {AppIndicator} indicator - the SNI indicator
  * @param {number} timestamp - event time
@@ -41,7 +41,7 @@ const _desktopAppCache = new WeakMap();
 function toggleWindows(indicator, timestamp) {
     const desktopApp = findDesktopApp(indicator);
     let app = desktopApp?.get_windows().length ? desktopApp : _findRunningApp(indicator);
-    if (!app && desktopApp && _isElectron(indicator.executable))
+    if (!app && desktopApp && _reopensWindow(desktopApp, () => indicator.executable))
         app = desktopApp;
 
     return app ? _toggleAppWindows(app, timestamp) : false;
@@ -59,13 +59,21 @@ function toggleTrayIconWindows(trayIcon, timestamp) {
     if (!app)
         return false;
 
-    // The executable is only needed to tell whether an app that is closed
-    // to the tray can bring its window back
     if (!app.get_windows().length &&
-        !_isElectron(_getPidExecutable(trayIcon.pid)))
+        !_reopensWindow(app, () => _getPidExecutable(trayIcon.pid)))
         return false;
 
     return _toggleAppWindows(app, timestamp);
+}
+
+// An app that is closed to the tray has no window to raise. A second launch
+// reaches the running instance in two cases: a D-Bus activatable app is
+// activated over the bus instead of being started, and Electron hands the
+// launch over through its single instance lock. The executable is only read
+// when the desktop file does not answer the question.
+function _reopensWindow(app, getExecutable) {
+    return app.get_app_info()?.get_boolean('DBusActivatable') ||
+        _isElectron(getExecutable());
 }
 
 /**
