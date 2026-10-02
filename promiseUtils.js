@@ -290,31 +290,21 @@ export class MetaLaterPromise extends CancellablePromise {
         else if (!laterType)
             laterType = Meta.LaterType.BEFORE_REDRAW;
 
-        // Meta.later_add() is gone since mutter 44, the laters of the
-        // compositor took its place
-        const laters = global.compositor.get_laters();
-
         let id;
         super(resolve => {
-            const callback = () => {
-                // The later takes itself out by returning SOURCE_REMOVE, so
-                // the id is dropped here and the cleanup does not remove a
-                // later that is gone already
-                this._id = 0;
+            id = Meta.later_add(laterType, () => {
+                this.remove();
                 resolve();
                 return GLib.SOURCE_REMOVE;
-            };
-
-            id = laters.add(laterType, callback);
+            });
         }, cancellable);
 
-        this._laters = laters;
         this._id = id;
     }
 
     _cleanup() {
         if (this._id) {
-            this._laters.remove(this._id);
+            Meta.later_remove(this._id);
             this._id = 0;
         }
         super._cleanup();

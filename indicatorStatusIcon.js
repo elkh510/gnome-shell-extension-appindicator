@@ -17,7 +17,6 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
-import Meta from 'gi://Meta';
 import St from 'gi://St';
 
 import * as AppDisplay from 'resource:///org/gnome/shell/ui/appDisplay.js';
@@ -667,62 +666,6 @@ class IndicatorTrayIcon extends BaseStatusIcon {
             this._updateIconSize());
 
         this._updateIconSize();
-
-        Util.connectSmart(this.container, 'parent-set', this, () =>
-            this._watchPanelBox());
-        this._watchPanelBox();
-    }
-
-    // The X window of a legacy icon is only moved when the icon actor itself
-    // gets an allocation. When the box that holds it changes size (a neighbor
-    // appears, disappears or gets wider) its children keep their place inside
-    // it, nothing is re-allocated and the window stays behind, drawn on top
-    // of the neighboring icon. Watch the box and move the icon along with it.
-    _watchPanelBox() {
-        if (this._panelBox) {
-            Util.disconnectSmart(this._panelBox, this, this._panelBoxSignalIds);
-            delete this._panelBox;
-            delete this._panelBoxSignalIds;
-        }
-
-        const parent = this.container.get_parent();
-        if (!parent)
-            return;
-
-        this._panelBox = parent;
-        this._panelBoxSignalIds = Util.connectSmart(parent,
-            'notify::allocation', this, () =>
-                this._repositionIcon().catch(logError));
-    }
-
-    async _repositionIcon() {
-        // The box is still being allocated, so both the new position and the
-        // relayout have to wait for the end of the current frame
-        if (this._repositionLater)
-            return;
-
-        // The type check of the promise compares the constructor of the
-        // value against Meta.LaterType, which a plain enum member never
-        // matches, so the type is left to its default (BEFORE_REDRAW)
-        this._repositionLater = new PromiseUtils.MetaLaterPromise();
-
-        try {
-            await this._repositionLater;
-        } catch (e) {
-            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                throw e;
-            return;
-        } finally {
-            delete this._repositionLater;
-        }
-
-        const [x, y] = this.container.get_transformed_position();
-        if (!Number.isFinite(x) || (x === this._stageX && y === this._stageY))
-            return;
-
-        this._stageX = x;
-        this._stageY = y;
-        this._icon?.queue_relayout();
     }
 
     _onDestroy() {
@@ -730,9 +673,6 @@ class IndicatorTrayIcon extends BaseStatusIcon {
 
         if (this._waitDoubleClickPromise)
             this._waitDoubleClickPromise.cancel();
-
-        if (this._repositionLater)
-            this._repositionLater.cancel();
 
         super._onDestroy();
     }
@@ -778,7 +718,7 @@ class IndicatorTrayIcon extends BaseStatusIcon {
 
     vfunc_touch_event(event) {
         // Under X11 we rely on emulated pointer events
-        if (!Meta.is_wayland_compositor())
+        if (!imports.gi.Meta.is_wayland_compositor())
             return Clutter.EVENT_PROPAGATE;
 
         const slot = event.get_event_sequence().get_slot();
