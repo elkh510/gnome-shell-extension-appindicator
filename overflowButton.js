@@ -121,8 +121,11 @@ class IndicatorOverflowButton extends PanelMenu.Button {
 
     updateMenu(overflowedIcons) {
         // Rebuilding tears down the icon actors and the attached menus of
-        // every entry, so it only happens when the set really changed
-        const entryIds = overflowedIcons.map(icon => icon.uniqueId).join();
+        // every entry, so it only happens when the set really changed. The
+        // name counts as well: the app behind an indicator may only be known
+        // after its entry was built, once its command line has been read
+        const entryIds = overflowedIcons.map(icon =>
+            `${icon.uniqueId}:${icon.title}`).join();
         if (entryIds === this._entryIds)
             return;
 
